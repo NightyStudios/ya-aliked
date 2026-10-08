@@ -1,0 +1,5 @@
+torch==2.5.1
+torchvision==0.20.1
+numpy>=1.26,<3
+Pillow>=10
+h5py>=3.10

@@ -1,0 +1,22 @@
+{
+  "repository": "https://github.com/Shiaoming/ALIKED",
+  "commit": "683d7c65197395c0b3f01ebe76e1084a27e73a65",
+  "files": {
+    "nets/aliked.py": {
+      "sha256": "657aa729ca063ce49bc37b25999bc57a9647236d2af229dbabf02f673aeee3f7",
+      "adaptation": "relative imports; detector provided by reconstruction"
+    },
+    "nets/blocks.py": {
+      "sha256": "ed38519c0afdcf9f56d7d5607370f9b012c2a89ae47cd892147393e63c0f579c",
+      "adaptation": "unchanged code; text line-ending normalization only"
+    },
+    "nets/padder.py": {
+      "sha256": "3c2cdac5339a9c1c2b539cf624b8c1d7f1b321a60af76bf4e8e12a277edc5b6a",
+      "adaptation": "unchanged code; text line-ending normalization only"
+    },
+    "nets/soft_detect.py": {
+      "sha256": "b02633d9820f2035f5a4e9c7e288f920f2637be7878ce1e20293cdfe03c29044",
+      "adaptation": "unchanged; used for reference DKD and simple_nms"
+    }
+  }
+}
