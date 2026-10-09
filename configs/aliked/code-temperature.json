@@ -1,0 +1,13 @@
+{
+  "model": "aliked-n16",
+  "t_rel": 0.1,
+  "megadepth_root": null,
+  "homography_manifest": null,
+  "validation_megadepth_root": null,
+  "validation_homography_manifest": null,
+  "validation_pairs_per_scene": 50,
+  "validation_max_pairs": 200,
+  "validation_selection_metric": "mean_correct_matches",
+  "inference_detector": "upstream",
+  "output_dir": "output/aliked-temperature-01"
+}

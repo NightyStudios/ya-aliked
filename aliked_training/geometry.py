@@ -13,6 +13,15 @@ class Warp:
     visible: torch.Tensor
     outside: torch.Tensor
 
+    @property
+    def evaluable(self):
+        """Known visible or definitely outside; depth holes remain unknown."""
+        return self.visible | self.outside
+
+    @property
+    def unknown(self):
+        return ~self.evaluable
+
 
 def in_bounds(points, shape):
     h, w = shape

@@ -2,7 +2,7 @@
 from pathlib import Path
 import torch
 from .vendor.aliked import ALIKED
-from .detector import TrainingDetector, integer_patches
+from .detector import InferenceDetector, TrainingDetector, integer_patches
 
 
 class TrainableALIKED(ALIKED):
@@ -12,6 +12,12 @@ class TrainableALIKED(ALIKED):
                                     random_k=config["random_k"], temperature=config["t_det"],
                                     peak_mode=config["peak_mode"], scores_th=config["eval_score_threshold"],
                                     n_limit=config["eval_max_keypoints"])
+        self.inference_detector = config.get("inference_detector", "upstream")
+        if self.inference_detector not in ("upstream", "training"):
+            raise ValueError("inference_detector must be upstream or training")
+        self.eval_dkd = InferenceDetector(radius=config["radius"], top_k=0,
+                                          scores_th=config["eval_score_threshold"],
+                                          n_limit=config["eval_max_keypoints"])
         # Upstream custom_ops CPU backward overwrites instead of accumulating
         # overlapping patches. Use the identical forward via indexed PyTorch.
         self.desc_head.get_patches_func = integer_patches
@@ -21,7 +27,10 @@ class TrainableALIKED(ALIKED):
 
     def forward(self, images, *, add_random=True, threshold=False):
         features, score_map = self.extract_dense_map(images)
-        pred = self.dkd(score_map, add_random=add_random, threshold=threshold)
+        if threshold and not add_random and self.inference_detector == "upstream":
+            pred = self.eval_dkd(score_map)
+        else:
+            pred = self.dkd(score_map, add_random=add_random, threshold=threshold)
         # Upstream SDDH does not accept empty keypoint sets.
         descriptors, offsets = [], []
         for index, points in enumerate(pred["keypoints"]):

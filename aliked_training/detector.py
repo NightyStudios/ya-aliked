@@ -3,10 +3,11 @@
 The public DKD dispersity uses squared, radius-normalized distances; Eq. (8)
 prints an unsquared distance. Both are selectable, with the public code default.
 """
+import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
-from .vendor.soft_detect import simple_nms
+from .vendor.soft_detect import DKD, simple_nms
 
 
 def integer_patches(fmap, points, size):
@@ -21,17 +22,40 @@ def integer_patches(fmap, points, size):
 
 
 def point_nms(points, scores, radius):
-    """Score-ordered suppression in pixel coordinates; keep original ordering."""
+    """Exact greedy radius suppression, with stable ties and original ordering.
+
+    Selection is discrete. Transfer detached candidates once instead of checking
+    CUDA scalars in a Python loop; use O(N) scratch rather than an NxN matrix.
+    Indexing the original tensors with the returned indices preserves gradients.
+    """
     if not len(points):
         return torch.empty(0, device=points.device, dtype=torch.long)
-    distances = torch.cdist(points.detach(), points.detach())
-    blocked = torch.zeros(len(points), device=points.device, dtype=torch.bool)
+    candidates = torch.cat((points.detach(), scores.detach()[:, None]), dim=1)
+    candidates = candidates.to(device="cpu", dtype=torch.float64).numpy()
+    xy, values = candidates[:, :2], candidates[:, 2]
+    blocked = np.zeros(len(points), dtype=bool)
     keep = []
-    for index in scores.detach().argsort(descending=True, stable=True):
+    for index in np.argsort(-values, kind="stable"):
         if not blocked[index]:
             keep.append(index)
-            blocked |= distances[index] < radius
-    return torch.stack(keep).sort().values
+            if radius > 0:
+                delta = xy - xy[index]
+                blocked |= np.einsum("ij,ij->i", delta, delta) < radius * radius
+    return torch.tensor(sorted(keep), device=points.device, dtype=torch.long)
+
+
+class InferenceDetector(DKD):
+    """The public DKD, including threshold fallback and its single map NMS.
+
+    Keep public inference's fixed 0.1 temperature and batch fallback semantics.
+    TrainingDetector remains the sparse, differentiable training implementation.
+    """
+
+    def forward(self, score_map):
+        points, scores, dispersity = super().forward(score_map)
+        return {"keypoints": points, "scores": scores,
+                "score_dispersity": dispersity,
+                "num_detected": [len(p) for p in points]}
 
 
 class TrainingDetector(nn.Module):
