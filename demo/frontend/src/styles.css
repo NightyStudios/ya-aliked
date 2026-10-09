@@ -1,0 +1,117 @@
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; height: 100%; overflow: hidden; }
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: #0f1115; color: #e6e8eb;
+}
+.app { display: flex; flex-direction: column; height: 100%; }
+
+.toolbar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 10px 16px; background: #15181e; border-bottom: 1px solid #232831;
+}
+.title { font-weight: 600; letter-spacing: .3px; margin-right: 8px; }
+.toolbar button, .filebtn {
+  padding: 6px 12px; border: 1px solid #2a3038; background: #1c2027;
+  color: #e6e8eb; border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+.filebtn:hover, .toolbar button:hover:not(:disabled) { background: #232831; }
+.toolbar button.active { background: #2b4a8a; border-color: #3d6bc9; }
+.toolbar button:disabled { opacity: .35; cursor: not-allowed; }
+.methods { display: flex; gap: 4px; }
+.status { margin-left: auto; font-size: 12px; color: #9aa4b2; }
+
+.panels {
+  flex: 1; display: grid; grid-template-columns: 1fr 1fr 320px;
+  gap: 1px; background: #232831; min-height: 0;
+}
+.panel {
+  position: relative; overflow: hidden; background: #0b0d10;
+  cursor: grab; user-select: none;
+}
+.panel:active { cursor: grabbing; }
+.panel.empty {
+  display: flex; align-items: center; justify-content: center;
+  color: #5a6472; border: 2px dashed #2a3038; margin: 12px;
+  border-radius: 10px; text-align: center; font-size: 14px; line-height: 1.7;
+}
+.panel.empty .hint { font-size: 12px; color: #4a5262; }
+.panel.empty.over { border-color: #3d6bc9; color: #8fa9dc; }
+
+.stage { position: absolute; top: 0; left: 0; will-change: transform; }
+.lines {
+  position: fixed; inset: 0; width: 100%; height: 100%;
+  pointer-events: none; z-index: 100;
+}
+
+.methods { display: flex; gap: 0; align-items: center; }
+.method-group {
+  display: flex; gap: 4px; align-items: center;
+  padding: 0 10px;
+}
+.method-group:first-child { padding-left: 0; }
+.method-group:not(:first-child) { border-left: 1px solid #232831; }
+.group-label {
+  font-size: 11px; color: #6a7380;
+  margin-right: 4px;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  user-select: none;
+}
+
+/* --- боковой список пар --- */
+.matchlist {
+  display: flex; flex-direction: column;
+  background: #15181e; min-width: 0; min-height: 0; overflow: hidden;
+}
+.matchlist-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 12px; border-bottom: 1px solid #232831;
+  font-size: 13px; font-weight: 600;
+}
+.matchlist-count {
+  background: #232831; color: #9aa4b2;
+  border-radius: 10px; padding: 1px 8px;
+  font-size: 11px; font-weight: 600;
+}
+.matchlist-body { flex: 1; overflow-y: auto; padding: 6px; }
+.matchlist-empty { color: #5a6472; font-size: 13px; padding: 18px 8px; text-align: center; }
+
+.matchrow {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 6px 8px; margin-bottom: 4px;
+  background: #1c2027; border: 1px solid #2a3038; border-radius: 6px;
+  color: #e6e8eb; font-size: 12px; text-align: left; cursor: pointer;
+}
+.matchrow:hover { background: #232831; border-color: var(--pair); }
+.matchrow.active { background: #2b4a8a; border-color: #3d6bc9; }
+.matchrow-no {
+  flex: 0 0 26px; height: 26px; border-radius: 5px;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--pair); color: #0f1115;
+  font-weight: 700; font-size: 12px;
+}
+.matchrow-coords { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+.coord {
+  display: flex; align-items: center; gap: 6px;
+  color: #c3c9d4; white-space: nowrap;
+}
+.coord .dot {
+  width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto;
+  background: var(--pair);
+}
+.coord-b .dot { background: transparent; border: 1.5px solid var(--pair); }
+.matchrow-dist { color: #6a7380; font-size: 11px; }
+
+/* --- непарные точки --- */
+.matchlist-divider {
+  height: 1px; background: #232831; margin: 8px 4px;
+}
+.matchlist-sub {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 8px 6px;
+  font-size: 11px; font-weight: 600; color: #6a7380;
+  text-transform: uppercase; letter-spacing: .5px;
+}
+.matchrow.unp .matchrow-coords { flex-direction: row; align-items: center; }
+.matchrow.unp .coord { font-size: 12px; }
