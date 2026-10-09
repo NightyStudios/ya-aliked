@@ -3,6 +3,8 @@ import argparse
 import json
 import math
 import random
+import hashlib
+import time
 from pathlib import Path
 import numpy as np
 import torch
@@ -11,7 +13,40 @@ from .config import load_config
 from .data import DISKMegaDepth, HomographicPairs, MixedPairs, collate_pairs, to_device, resolve
 from .model import TrainableALIKED
 from .losses import pair_loss
-from .validation import validate
+from .validation import validate, validation_indices
+
+
+CHECKPOINT_VERSION = 2
+
+
+def dataset_image_paths(dataset):
+    if isinstance(dataset, DISKMegaDepth):
+        return {(resolve(dataset.root, scene["image_path"]) /
+                 (name if Path(name).suffix else name + ".jpg")).resolve()
+                for _, scene in dataset.scenes for name in scene["images"]}
+    return {resolve(dataset.root, row[key]).resolve()
+            for row in dataset.records for key in ("image0", "image1") if key in row}
+
+
+def data_provenance(train_data, validation, config):
+    """Pin manifests and selected validation indices; reject changed data on resume."""
+    datasets = {"train/megadepth": train_data.perspective,
+                "train/homography": train_data.homographic, **validation}
+    result = {}
+    for name, dataset in datasets.items():
+        if isinstance(dataset, DISKMegaDepth):
+            manifest = config["megadepth_manifest"] if name.startswith("train/") else config["validation_megadepth_manifest"]
+            path = resolve(dataset.root, manifest)
+        else:
+            path = dataset.manifest
+        record = {"manifest": str(path.resolve()),
+                  "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "pairs": len(dataset)}
+        if isinstance(dataset, DISKMegaDepth):
+            record["scenes"] = [name for name, _ in dataset.scenes]
+        if not name.startswith("train/"):
+            record["indices"] = validation_indices(dataset, config["validation_max_pairs"], config["validation_seed"])
+        result[name] = record
+    return result
 
 
 def datasets_from_config(config):
@@ -19,7 +54,8 @@ def datasets_from_config(config):
         raise ValueError("Set megadepth_root and homography_manifest to existing local/server paths")
     perspective = DISKMegaDepth(config["megadepth_root"], size=config["image_size"],
                                pairs_per_scene=config["pairs_per_scene"], seed=config["seed"],
-                               excluded_scenes=config["excluded_scenes"], manifest=config["megadepth_manifest"])
+                               excluded_scenes=config["excluded_scenes"], manifest=config["megadepth_manifest"],
+                               depth_tolerance=config["depth_tolerance"])
     homographic = HomographicPairs(config["homography_manifest"], config["homography_root"],
                                   size=config["image_size"], seed=config["seed"],
                                   tilt=config["homography_tilt"], rotation=config["rotation_degrees"])
@@ -30,7 +66,10 @@ def datasets_from_config(config):
             raise ValueError("Validation MegaDepth must have a separate root from training data")
         validation["megadepth"] = DISKMegaDepth(config["validation_megadepth_root"],
                                                 size=config["image_size"], augment=False,
-                                                pairs_per_scene=1, seed=config["seed"])
+                                                pairs_per_scene=config["validation_pairs_per_scene"],
+                                                seed=config["validation_seed"],
+                                                manifest=config["validation_megadepth_manifest"],
+                                                depth_tolerance=config["depth_tolerance"])
         overlapping = {name for name, _ in perspective.scenes} & {name for name, _ in validation["megadepth"].scenes}
         if overlapping:
             raise ValueError(f"Training and validation scenes overlap: {sorted(overlapping)}")
@@ -38,16 +77,18 @@ def datasets_from_config(config):
         if Path(config["validation_homography_manifest"]).resolve() == Path(config["homography_manifest"]).resolve():
             raise ValueError("Homography validation must have a separate manifest")
         validation["homography"] = HomographicPairs(config["validation_homography_manifest"],
-                                                    size=config["image_size"], augment=False)
+                                                    root=config["validation_homography_root"],
+                                                    size=config["image_size"], augment=False,
+                                                    seed=config["validation_seed"])
         if any("image1" not in row for row in validation["homography"].records):
             raise ValueError("Validation homographies require real image0/image1 pairs with known H01")
-        def image_paths(dataset):
-            return {resolve(dataset.root, row[key]).resolve()
-                    for row in dataset.records for key in ("image0", "image1") if key in row}
-        if image_paths(homographic) & image_paths(validation["homography"]):
-            raise ValueError("Training and validation homography images overlap")
     if not validation:
         raise ValueError("Configure a held-out validation source for selecting the best model")
+    training_paths = dataset_image_paths(perspective) | dataset_image_paths(homographic)
+    for name, dataset in validation.items():
+        overlap = training_paths & dataset_image_paths(dataset)
+        if overlap:
+            raise ValueError(f"Training and validation {name} images overlap: {next(iter(overlap))}")
     return train, validation
 
 
@@ -68,6 +109,7 @@ def inspect(config, check_data=False):
             sample = dataset[0]
             report[name] = {"pairs": len(dataset), "image_shape": list(sample["image0"].shape),
                             "geometry": sample["warp01"]["mode"]}
+        report["data_provenance"] = data_provenance(train, validation, config)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return report
 
@@ -78,8 +120,9 @@ def seed_worker(worker_id):
     np.random.seed(seed)
 
 
-def checkpoint_state(model, optimizer, scheduler, config, step, epoch, batch_index, best):
-    return {"model": model.state_dict(), "optimizer": optimizer.state_dict(),
+def checkpoint_state(model, optimizer, scheduler, config, step, epoch, batch_index, best, provenance=None):
+    return {"format_version": CHECKPOINT_VERSION, "data_provenance": provenance,
+            "model": model.state_dict(), "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(), "config": config, "step": step,
             "epoch": epoch, "batch_index": batch_index, "best_metric": best,
             "torch_rng": torch.get_rng_state(), "numpy_rng": np.random.get_state(),
@@ -103,10 +146,11 @@ def train(config, resume=None):
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but not available")
     train_data, validation = datasets_from_config(config)
+    provenance = data_provenance(train_data, validation, config)
     batches_per_epoch = len(train_data) // config["batch_size"]
     if not batches_per_epoch:
         raise ValueError("Dataset is smaller than one training batch")
-    model = TrainableALIKED(config, config["initial_weights"]).to(device).train()
+    model = TrainableALIKED(config, None if resume else config["initial_weights"]).to(device).train()
     optimizer = torch.optim.Adam(model.parameters(), lr=config["learning_rate"],
                                  betas=tuple(config["adam_betas"]))
     warmup = config["warmup_steps"]
@@ -115,7 +159,12 @@ def train(config, resume=None):
     if resume:
         # Full checkpoints include Python/NumPy RNG state. Load only a trusted local checkpoint.
         state = torch.load(resume, map_location=device, weights_only=False)
-        changes = [key for key in config if state["config"][key] != config[key]
+        if state.get("format_version") != CHECKPOINT_VERSION:
+            raise ValueError("Checkpoint predates the corrected data/evaluation protocol; "
+                             "export its model state_dict and use initial_weights for a new run")
+        if state.get("data_provenance") != provenance:
+            raise ValueError("Dataset manifests or validation selection changed since checkpoint")
+        changes = [key for key in config if state["config"].get(key) != config[key]
                    and key not in ("output_dir", "device", "max_steps", "workers")]
         if changes:
             raise ValueError(f"Resume configuration differs: {changes}")
@@ -132,9 +181,11 @@ def train(config, resume=None):
     output = Path(config["output_dir"])
     output.mkdir(parents=True, exist_ok=True)
     (output / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+    (output / "data-provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
     optimizer.zero_grad(set_to_none=True)
     microbatches = 0
     totals = {key: 0.0 for key in ("rp", "pk", "ds", "re", "total", "matches")}
+    update_started = time.perf_counter()
     while step < config["max_steps"]:
         train_data.set_epoch(epoch)
         generator = torch.Generator().manual_seed(config["seed"] + epoch)
@@ -148,32 +199,51 @@ def train(config, resume=None):
             images0 = torch.stack([sample["image0"] for sample in batch])
             images1 = torch.stack([sample["image1"] for sample in batch])
             pred0, pred1 = model(images0), model(images1)
-            losses = pair_loss(pred0, pred1, batch, config)
+            diagnostic_step = (config["diagnostics_interval"] > 0 and
+                               (step + 1) % config["diagnostics_interval"] == 0 and
+                               microbatches == config["accumulate_batches"] - 1)
+            losses = pair_loss(pred0, pred1, batch, config, diagnostics=diagnostic_step)
+            diagnostics = losses.get("diagnostics", {})
+            if diagnostic_step:
+                parameters = [p for p in model.score_head.parameters() if p.requires_grad]
+                for key in ("rp", "pk", "ds", "re"):
+                    if losses[key].requires_grad:
+                        grads = torch.autograd.grad(losses[key], parameters, retain_graph=True, allow_unused=True)
+                        squares = [g.detach().square().sum() for g in grads if g is not None]
+                        diagnostics["score_grad_norm/" + key] = torch.stack(squares).sum().sqrt() if squares else 0.0
             if not torch.isfinite(losses["total"]):
                 raise FloatingPointError(f"Nonfinite loss at update {step}, batch {batch_index}")
             (losses["total"] / config["accumulate_batches"]).backward()
             for key in totals:
                 value = losses[key]
-                totals[key] += float(value.detach()) if isinstance(value, torch.Tensor) else value
+                totals[key] += value.detach() if isinstance(value, torch.Tensor) else value
             microbatches += 1
             batch_index += 1
             if microbatches < config["accumulate_batches"]:
                 continue
-            if any(p.grad is not None and not torch.isfinite(p.grad).all() for p in model.parameters()):
+            finite = [torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None]
+            if finite and not torch.stack(finite).all().item():
                 raise FloatingPointError(f"Nonfinite gradients at update {step}")
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
             step += 1
-            record = {"step": step, "lr": optimizer.param_groups[0]["lr"],
-                      **{key: value/microbatches for key, value in totals.items()}}
+            values = {key: value/microbatches for key, value in totals.items()}
+            values.update({"diagnostics/" + key: value for key, value in diagnostics.items()})
+            # One host transfer for scalar metrics, rather than a CUDA sync per loss.
+            packed = torch.stack([torch.as_tensor(value, device=device).float() for value in values.values()]).cpu().tolist()
+            record = {"step": step, "microsteps": step * config["accumulate_batches"],
+                      "samples_seen": step * config["accumulate_batches"] * config["batch_size"],
+                      "lr": optimizer.param_groups[0]["lr"],
+                      "update_seconds": time.perf_counter() - update_started,
+                      **dict(zip(values, packed))}
             if step % config["validation_interval"] == 0 or step == config["max_steps"]:
                 # Holdout does not consume the RNG used for future random training probes.
                 metrics = validate(model, validation, config, device)
                 record.update(metrics)
                 improved = metrics["selection_metric"] > best
                 best = max(best, metrics["selection_metric"])
-                state = checkpoint_state(model, optimizer, scheduler, config, step, epoch, batch_index, best)
+                state = checkpoint_state(model, optimizer, scheduler, config, step, epoch, batch_index, best, provenance)
                 save_checkpoint(output / "last.pt", state)
                 if improved:
                     save_checkpoint(output / "best.pt", state)
@@ -184,6 +254,7 @@ def train(config, resume=None):
             print(json.dumps(record), flush=True)
             microbatches = 0
             totals = dict.fromkeys(totals, 0.0)
+            update_started = time.perf_counter()
             if step >= config["max_steps"]:
                 break
         if batch_index >= batches_per_epoch:

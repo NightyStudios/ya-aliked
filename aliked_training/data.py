@@ -4,6 +4,7 @@ import random
 import functools
 import bisect
 import itertools
+import hashlib
 from pathlib import Path
 import h5py
 import numpy as np
@@ -14,13 +15,24 @@ from torch.utils.data import Dataset
 from torchvision.transforms import ColorJitter, ToTensor
 
 
+def sample_seed(dataset, index, draw_id=None):
+    if draw_id is None:
+        return dataset.seed + dataset.epoch * len(dataset) + index
+    # Include the draw as well as the record: sampling a small manifest with
+    # replacement must not replay identical augmentations throughout an epoch.
+    key = f"{dataset.seed}:{dataset.epoch}:{index}:{draw_id}".encode()
+    return int.from_bytes(hashlib.blake2b(key, digest_size=8).digest(), "little") % (2**63)
+
+
 def seeded_sample(method):
     """Stateless CPU augmentation allows repeatable worker and resume behaviour."""
     @functools.wraps(method)
-    def wrapped(self, index):
+    def wrapped(self, index, *, draw_id=None):
         with torch.random.fork_rng(devices=[]):
-            torch.random.default_generator.manual_seed(self.seed + self.epoch * len(self) + index)
-            return method(self, index)
+            torch.random.default_generator.manual_seed(sample_seed(self, index, draw_id))
+            if draw_id is None:
+                return method(self, index)
+            return method(self, index, draw_id=draw_id)
     return wrapped
 
 
@@ -42,10 +54,13 @@ def resolve(root, path):
 class DISKMegaDepth(Dataset):
     """Read the format used by ALIKE's released MegaDepth loader, without caches."""
     def __init__(self, root, size=800, pairs_per_scene=10000, augment=True,
-                 seed=0, excluded_scenes=(), manifest="dataset.json"):
+                 seed=0, excluded_scenes=(), manifest="dataset.json", depth_tolerance=0.05):
         self.root, self.size, self.seed = Path(root), size, seed
         self.augment, self.epoch = augment, 0
         self.pairs_per_scene = pairs_per_scene
+        if not np.isfinite(depth_tolerance) or depth_tolerance <= 0:
+            raise ValueError("depth_tolerance must be finite and positive")
+        self.depth_tolerance = depth_tolerance
         with open(resolve(self.root, manifest)) as stream:
             scenes = json.load(stream)
         self.scenes = [(name, scene) for name, scene in scenes.items() if name not in excluded_scenes]
@@ -94,9 +109,8 @@ class DISKMegaDepth(Dataset):
         height, width = original_shape
         intrinsic[0] *= self.size / width
         intrinsic[1] *= self.size / height
-        # Nearest preserves missing-depth holes. Difference from old ALIKE's
-        # bilinear depth resize is recorded in the reproduction report.
-        depth = F.interpolate(depth[None, None], (self.size, self.size), mode="nearest")[0, 0]
+        # Match PIL's pixel-centre resize convention while preserving depth holes.
+        depth = F.interpolate(depth[None, None], (self.size, self.size), mode="nearest-exact")[0, 0]
         return image, depth, intrinsic, pose
 
     @seeded_sample
@@ -116,9 +130,11 @@ class DISKMegaDepth(Dataset):
         image1, depth1, k1, pose1 = self._read(scene, b)
         t01 = pose1 @ torch.linalg.inv(pose0)  # world-to-camera matrices
         common = {"mode": "se3", "depth0": depth0, "depth1": depth1,
-                  "K0": k0, "K1": k1, "T01": t01}
+                  "K0": k0, "K1": k1, "T01": t01,
+                  "depth_tolerance": self.depth_tolerance}
         reverse = {"mode": "se3", "depth0": depth1, "depth1": depth0,
-                   "K0": k1, "K1": k0, "T01": torch.linalg.inv(t01)}
+                   "K0": k1, "K1": k0, "T01": torch.linalg.inv(t01),
+                   "depth_tolerance": self.depth_tolerance}
         return {"image0": image0, "image1": image1, "warp01": common,
                 "warp10": reverse, "source": "megadepth", "scene": scene_name}
 
@@ -187,9 +203,9 @@ class HomographicPairs(Dataset):
         return len(self.records)
 
     @seeded_sample
-    def __getitem__(self, index):
+    def __getitem__(self, index, *, draw_id=None):
         row = self.records[index]
-        rng = random.Random(self.seed + self.epoch * len(self) + index)
+        rng = random.Random(sample_seed(self, index, draw_id))
         image0, shape0 = image_tensor(resolve(self.root, row["image0"]), self.size, self.augment)
         image1, shape1 = image_tensor(resolve(self.root, row.get("image1", row["image0"])),
                                     self.size, self.augment)
@@ -246,7 +262,7 @@ class MixedPairs(Dataset):
     def __getitem__(self, index):
         rng = random.Random(self.seed + self.epoch * len(self) + index)
         if rng.random() < self.probability:
-            return self.homographic[rng.randrange(len(self.homographic))]
+            return self.homographic.__getitem__(rng.randrange(len(self.homographic)), draw_id=index)
         return self.perspective[index]
 
 
@@ -257,7 +273,7 @@ def collate_pairs(samples):
 
 def to_device(sample, device):
     if isinstance(sample, torch.Tensor):
-        return sample.to(device)
+        return sample.to(device, non_blocking=sample.is_pinned())
     if isinstance(sample, dict):
         return {key: to_device(value, device) for key, value in sample.items()}
     if isinstance(sample, list):
