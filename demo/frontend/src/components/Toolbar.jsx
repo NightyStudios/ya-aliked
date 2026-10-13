@@ -75,6 +75,9 @@ export function Toolbar({
   filterOn, onToggleFilter, canFilter, filterInfo,
   filterImpThr, setFilterImpThr, filterRadius, setFilterRadius,
   filterReady,
+  semanticClasses, excludedClasses, setExcludedClasses,
+  classMargin, setClassMargin, geometryFilterOn, setGeometryFilterOn,
+  classFilterBusy, classFilterError, marginSavedCount,
 }) {
   const list = visibleMethods(methodsMeta);
   const entries = list.length ? list : FALLBACK;
@@ -133,16 +136,15 @@ export function Toolbar({
       : maskError
         ? `Ошибка: ${maskError}`
         : maskVisible
-          ? `Скрыть маски Mask2Former · инстансов: ${maskCount}` +
+          ? `Скрыть маски Mask2Former · областей: ${maskCount}` +
             (maskMs != null ? ` · ${Math.round(maskMs)} мс` : '')
-          : 'Показать маски Mask2Former поверх правого изображения';
+          : 'Показать семантические области Mask2Former на всём правом изображении';
 
   const filterTitle = !canFilter
     ? 'Сначала посчитайте маски Mask2Former'
     : filterOn
-      ? 'Показать все точки (снять фильтр «границы областей ∪ важные»)'
-      : 'Оставить точки на границах областей Mask2Former ' +
-        'или очень важные для деформации (остальные скрыть)';
+      ? 'Выключить фильтры и показать все точки'
+      : 'Настроить запрещённые классы и марджин для точек правого снимка';
 
   const closeMenus = () => { setMenuOpen(false); setMoreOpen(false); };
 
@@ -254,7 +256,45 @@ export function Toolbar({
       </button>
 
       {filterOn && filterInfo && (
-        <div className="ctxbar">
+        <div className="ctxbar class-filter-controls">
+          <details className="class-picker" open>
+            <summary>Запрещённые классы · {excludedClasses.length}</summary>
+            <div className="class-picker-body">
+              <p>Точки правого снимка внутри отмеченных классов скрываются вместе с парой слева.</p>
+              <div className="class-options">
+                {semanticClasses.map(c => (
+                  <label key={c.id}>
+                    <input type="checkbox" checked={excludedClasses.includes(c.id)}
+                      onChange={e => setExcludedClasses(prev => e.target.checked
+                        ? [...prev, c.id] : prev.filter(id => id !== c.id))} />
+                    <i style={{ background: c.color }} />
+                    <span>{c.label}</span>
+                    {!c.area && <small>нет на снимке</small>}
+                  </label>
+                ))}
+              </div>
+              <label className="margin-input">
+                Марджин, px
+                <input type="number" min="0" step="0.5" aria-label="Марджин, px"
+                  value={classMargin}
+                  onChange={e => {
+                    const n = Number(e.target.value);
+                    if (Number.isFinite(n) && n >= 0) setClassMargin(n);
+                  }} />
+              </label>
+              <p>Сохранять точку в запрещённом классе, если до разрешённого пикселя не больше марджина. 0 — строгий запрет.</p>
+              <label className="geometry-option">
+                <input type="checkbox" checked={geometryFilterOn}
+                  onChange={e => setGeometryFilterOn(e.target.checked)} />
+                Дополнительно: только границы или важные точки
+              </label>
+              <div className="class-filter-status" role="status">
+                {classFilterError || (classFilterBusy ? 'Пересчитываем фильтр…'
+                  : `Осталось ${filterInfo.keptPairs}/${filterInfo.totalPairs} пар · марджин сохранил ${marginSavedCount} точек`)}
+              </div>
+            </div>
+          </details>
+          {geometryFilterOn && <>
           <label
             className="alpha-ctl"
             title={filterReady
@@ -279,6 +319,7 @@ export function Toolbar({
             />
             <span className="ctl-val">{filterRadius}px</span>
           </label>
+          </>}
           <span className="filter-count" title="Пар, оставшихся после фильтра">
             {filterInfo.keptPairs}/{filterInfo.totalPairs} пар
           </span>

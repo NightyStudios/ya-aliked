@@ -4,8 +4,8 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # веса Mask2Former (~190 МБ) качаются один раз и живут в томе hf_cache
-      - M2F_MODEL_ID=${M2F_MODEL_ID:-facebook/mask2former-swin-tiny-coco-instance}
+      # Спутниковые веса скачиваются один раз и живут в томе hf_cache.
+      - M2F_MODEL_ID=${M2F_MODEL_ID:-Firework2026/mask2former-satellite}
       - HF_HOME=/root/.cache/huggingface
     volumes:
       - .:/app

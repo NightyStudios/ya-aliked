@@ -6,6 +6,7 @@ import { ConnectionLine } from './components/ConnectionLine';
 import { useOpenCV } from './hooks/useOpenCV';
 import { usePanZoom } from './hooks/usePanZoom';
 import { useMatcher } from './hooks/useMatcher';
+import { useClassFilter } from './hooks/useClassFilter';
 import { loadImage, screenPoint } from './cv/loadImage';
 import { fetchMethods } from './cv/methods';
 import { fetchSegmentation } from './cv/segment';
@@ -96,6 +97,9 @@ export default function App() {
   const [filterOn, setFilterOn] = useState(false);
   const [filterImpThr, setFilterImpThr] = useState(0.5);   // порог нормы деформируемости
   const [filterRadius, setFilterRadius] = useState(4);     // радиус границы, px полного кадра
+  const [excludedClasses, setExcludedClasses] = useState([]);
+  const [classMargin, setClassMargin] = useState(5);
+  const [geometryFilterOn, setGeometryFilterOn] = useState(false);
 
   // --- метаданные методов с бэка
   useEffect(() => {
@@ -233,7 +237,7 @@ export default function App() {
       const res = await fetchSegmentation(imgB);
       if (maskGenRef.current !== gen) return;
       setMaskData({ imgB, ...res });
-      console.info(`Mask2Former: ${res.instances.length} инстансов за ${Math.round(res.elapsedMs)} мс`);
+      console.info(`Mask2Former: ${res.instances.length} областей за ${Math.round(res.elapsedMs)} мс`);
     } catch (e) {
       if (maskGenRef.current !== gen) return;
       console.error('Mask2Former:', e);
@@ -254,7 +258,7 @@ export default function App() {
 
   // включили маски (или сменили картинку) — запустить расчёт, если результата нет
   useEffect(() => {
-    if (maskVisible && imgB && !maskData && !maskBusy && !maskError) runMask();
+    if (maskVisible && imgB && (!maskData || !maskData.classMapPng) && !maskBusy && !maskError) runMask();
   }, [maskVisible, imgB, maskData, maskBusy, maskError, runMask]);
 
   // отрисовка слоя масок в правой панели (растягиваем на исходный кадр)
@@ -274,6 +278,10 @@ export default function App() {
   // --- фильтр точек: границы областей Mask2Former ∪ важные для деформации
   const maskBoundary = maskData && maskData.imgB === imgB ? maskData.boundary : null;
   const canFilter = !!maskBoundary;
+  const classFilter = useClassFilter({
+    enabled: filterOn, classMap: maskData?.imgB === imgB ? maskData.classMapPng : null,
+    points: kpsB, excludedClasses, margin: classMargin,
+  });
 
   const filterSets = useMemo(() => {
     if (!filterOn || !maskBoundary) return null;
@@ -282,9 +290,10 @@ export default function App() {
       importance: impReady ? importance : null,
       boundary: maskBoundary, imgB,
       impThr: filterImpThr, radius: filterRadius,
+      classKeep: classFilter.keep, geometryOn: geometryFilterOn,
     });
   }, [filterOn, maskBoundary, kpsA, kpsB, matches,
-      impReady, importance, imgB, filterImpThr, filterRadius]);
+      impReady, importance, imgB, filterImpThr, filterRadius, classFilter.keep, geometryFilterOn]);
 
   const toggleFilter = useCallback(() => {
     if (!canFilter) return;
@@ -650,6 +659,16 @@ export default function App() {
         filterRadius={filterRadius}
         setFilterRadius={setFilterRadius}
         filterReady={impReady}
+        semanticClasses={maskData?.classes || []}
+        excludedClasses={excludedClasses}
+        setExcludedClasses={setExcludedClasses}
+        classMargin={classMargin}
+        setClassMargin={setClassMargin}
+        geometryFilterOn={geometryFilterOn}
+        setGeometryFilterOn={setGeometryFilterOn}
+        classFilterBusy={classFilter.busy}
+        classFilterError={classFilter.error}
+        marginSavedCount={classFilter.savedCount}
       />
 
       <div className="panels">

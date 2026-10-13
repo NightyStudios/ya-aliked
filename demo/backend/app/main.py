@@ -9,12 +9,14 @@ from . import detectors  # noqa: F401
 from . import matchers   # noqa: F401
 from . import registry
 from . import segment
+from .keypoint_filter import decode_class_map, filter_by_mask
 from .image_io import decode_image_b64
 from .schemas import (
     DetectRequest, DetectResponse, Detection,
     Match, MethodsResponse, DetectorMeta,
     PipelineRequest, PipelineResponse,
     SegmentRequest, SegmentResponse, SegmentInstance,
+    KeypointFilterRequest, KeypointFilterResponse,
 )
 
 
@@ -116,21 +118,32 @@ def segment_image_endpoint(req: SegmentRequest):
         raise HTTPException(status_code=400, detail=f"Bad image: {e}")
 
     try:
-        thr = req.threshold if req.threshold is not None else segment.SCORE_THRESHOLD
-        out = segment.segment_image(img, threshold=thr)
+        out = segment.segment_image(img)
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Segmentation failed: {e}")
 
     return SegmentResponse(
         overlay_png_b64=out["overlay_png_b64"],
         boundary_png_b64=out["boundary_png_b64"],
+        class_map_png_b64=out["class_map_png_b64"],
+        classes=out["classes"],
         instances=[SegmentInstance(**i) for i in out["instances"]],
         width=out["width"],
         height=out["height"],
         model=out["model"],
+        mode=out["mode"],
         threshold=out["threshold"],
         elapsed_ms=out["elapsed_ms"],
     )
+
+
+@app.post("/api/filter-keypoints", response_model=KeypointFilterResponse)
+def filter_keypoints(req: KeypointFilterRequest):
+    try:
+        return filter_by_mask(decode_class_map(req.class_map_png_b64), req.points,
+                              req.excluded_classes, req.margin)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 '''
 @app.post("/api/neighbors", response_model=NeighborsResponse)

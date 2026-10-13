@@ -1,4 +1,4 @@
-// Инстанс-сегментация через бэкенд (POST /api/segment, Mask2Former).
+// Семантическая сегментация через бэкенд (POST /api/segment, Mask2Former).
 
 function loadPngDataUrl(src) {
   return new Promise((resolve, reject) => {
@@ -74,6 +74,8 @@ export async function fetchSegmentation(img, { threshold } = {}) {
   return {
     el,
     boundary,
+    classMapPng: d.class_map_png_b64 || null,
+    classes: d.classes || [],
     instances: d.instances || [],
     width: d.width,
     height: d.height,
