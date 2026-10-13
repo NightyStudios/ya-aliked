@@ -13,3 +13,8 @@ def decode_image_b64(image_b64: str) -> np.ndarray:
     if img is None:
         raise ValueError("Failed to decode image from base64")
     return img
+
+
+def decode_image_rgb_b64(image_b64: str) -> np.ndarray:
+    """То же, но в RGB — метрики схожести считаются в RGB."""
+    return cv2.cvtColor(decode_image_b64(image_b64), cv2.COLOR_BGR2RGB)

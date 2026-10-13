@@ -1,7 +1,9 @@
 // Чистые функции для редактирования точек и пар.
 // matches: [{ aIdx, bIdx, dist }] — индексы в kpsA / kpsB.
 
+// Спред сохраняет дополнительные поля точки (например, ex — вне триангуляции).
 export const clampKp = (kp, img) => ({
+  ...kp,
   x: Math.max(0, Math.min(img.width, kp.x)),
   y: Math.max(0, Math.min(img.height, kp.y)),
 });

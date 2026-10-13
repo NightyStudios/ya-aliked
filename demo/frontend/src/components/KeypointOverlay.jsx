@@ -37,6 +37,7 @@ export function KeypointOverlay({
         if (!kp) return null;
         if (hidden && hidden.has(i)) return null;   // точка отсеяна фильтром после масок
         const active = isActive(side, i);
+        const excluded = !!kp.ex;               // вне триангуляции (режим деформации)
         const mIdx   = colorMap.get(i);
         // цвет по деформируемости — только правая картинка (левая — эталон)
         const norm   = normMap && mIdx != null ? normMap.get(i) : undefined;
@@ -50,10 +51,11 @@ export function KeypointOverlay({
         const highlight  = isHovered || isSelected || isPending || isDragged(i);
 
         const r = (highlight ? POINT_RADIUS_HOVER : POINT_RADIUS) / tf.s;
+        const xs = (POINT_RADIUS + 3) / tf.s;    // половина стороны ×
         const no = pairNo ? pairNo.get(i) : undefined;
 
         return (
-          <g key={i} opacity={active ? 1 : DIM_OPACITY}>
+          <g key={i} opacity={excluded ? 0.45 : (active ? 1 : DIM_OPACITY)}>
             {highlight && (
               <circle cx={kp.x} cy={kp.y} r={HALO_RADIUS / tf.s}
                       fill="none"
@@ -64,6 +66,13 @@ export function KeypointOverlay({
                     fill={isPending ? COLOR_LINE : color}
                     stroke={isSelected || isDragged(i) ? '#fff' : 'rgba(0,0,0,.55)'}
                     strokeWidth={(isSelected || isDragged(i) ? 1.5 : 0.5) / tf.s} />
+
+            {excluded && (
+              <path d={`M${kp.x - xs} ${kp.y - xs}L${kp.x + xs} ${kp.y + xs}M${kp.x + xs} ${kp.y - xs}L${kp.x - xs} ${kp.y + xs}`}
+                    stroke="#e05c5c" strokeWidth={1.6 / tf.s}
+                    strokeLinecap="round"
+                    style={{ pointerEvents: 'none' }} />
+            )}
 
             {no != null && (
               <text x={kp.x + (POINT_RADIUS_HOVER + 4) / tf.s}

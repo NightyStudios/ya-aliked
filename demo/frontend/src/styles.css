@@ -292,6 +292,41 @@ body {
 /* строки списков, отсеянные фильтром «границы ∪ важные» */
 .matchrow.dim { opacity: .35; }
 
+/* строки пар, исключённых из триангуляции в режиме деформации */
+.matchrow.excl { opacity: .4; }
+.matchrow.excl .coord { text-decoration: line-through; }
+
+/* спиннер на занятой иконке (генерация, проверка) */
+.ibtn.busy svg { animation: spin 1s linear infinite; }
+
+/* --- сайдбар «Проверка с эталоном» --- */
+.check-note {
+  padding: 8px 10px; border-bottom: 1px solid #232831;
+  font-size: 11px; line-height: 1.5; color: #9aa4b2;
+}
+.check-note b { color: #e6e8eb; font-weight: 600; }
+.checktable {
+  width: 100%; border-collapse: collapse; font-size: 12px;
+}
+.checktable th {
+  padding: 6px 8px; text-align: right; color: #6a7380;
+  font-size: 10px; text-transform: uppercase; letter-spacing: .5px;
+  border-bottom: 1px solid #232831; font-weight: 600;
+}
+.checktable th:first-child { text-align: left; }
+.checktable td {
+  padding: 5px 8px; text-align: right; color: #c3c9d4;
+  border-top: 1px solid #232831; font-variant-numeric: tabular-nums;
+}
+.checktable td:first-child { text-align: left; color: #9aa4b2; }
+.checktable td.better { color: #6fdba0; font-weight: 700; }
+.checktable td.na { color: #5a6472; }
+.check-verdict {
+  margin-top: 8px; padding: 7px 9px; border-radius: 6px;
+  background: rgba(61,107,201,.16); border: 1px solid #2a3038;
+  font-size: 11px; font-weight: 600; color: #8fa9dc; text-align: center;
+}
+
 /* слой наложения правого изображения — внутри .stage левой картинки */
 .overlay-layer {
   position: absolute; top: 0; left: 0;
@@ -300,6 +335,17 @@ body {
 
 /* слой масок Mask2Former — внутри .stage правой картинки */
 .mask-layer {
+  position: absolute; top: 0; left: 0;
+  display: block; pointer-events: none;
+}
+
+/* warp B→A поверх неизменённой правой картинки + сетка триангуляции */
+.rwarp-layer {
+  position: absolute; top: 0; left: 0;
+  display: block; pointer-events: none;
+}
+
+.rwarp-mesh {
   position: absolute; top: 0; left: 0;
   display: block; pointer-events: none;
 }

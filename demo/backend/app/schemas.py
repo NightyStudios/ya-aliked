@@ -128,6 +128,34 @@ class KeypointFilterResponse(BaseModel):
     saved_by_margin: List[bool]
 
 
+class SimilarityRequest(BaseModel):
+    image_ref: ImagePayload           # эталон
+    image_initial: ImagePayload       # начальное (правое) изображение
+    image_warped: ImagePayload        # наложенное (деформированное правое)
+    tile: int = Field(default=128, ge=8, le=512)   # размер куска для локальных сдвигов
+
+
+class SimilarityMetrics(BaseModel):
+    # None — метрика не определена (нечерные поля, вырожденный кусок и т.п.)
+    mae: float | None = None                  # средняя абсолютная разница, 0–255
+    psnr: float | None = None                 # дБ
+    ssim: float | None = None
+    ncc: float | None = None                  # корреляция яркостей
+    dx: float | None = None                   # общий сдвиг, px
+    dy: float | None = None
+    tiles: int = 0                            # оцененных кусков tile×tile
+    tile_median: float | None = None          # медиана |сдвига| кусков, px
+    tiles_under_1px: float | None = None      # доля кусков со сдвигом < 1 px (0..1)
+
+
+class SimilarityResponse(BaseModel):
+    ref_size: Tuple[int, int]                 # (w, h) эталона до обрезки
+    compared_size: Tuple[int, int]            # (w, h) общей области сравнения
+    initial: SimilarityMetrics
+    warped: SimilarityMetrics
+    elapsed_ms: float
+
+
 class DetectorMeta(BaseModel):
     available: bool
     description: str = ""

@@ -9,6 +9,7 @@ export function Panel({
   pairNo, normMap, connectFrom, onPointClick, onStartDrag,
   dragging, overlayLayerRef, overlayAlpha,
   maskLayerRef, maskAlpha, maskVisible, hidden,
+  rwarpLayerRef, rwarpMeshRef, rwarpAlpha, rwarpVisible,
 }) {
   const [over, setOver] = useState(false);
   const inputRef = useRef(null);
@@ -73,6 +74,14 @@ export function Panel({
         {maskLayerRef && (
           <canvas ref={maskLayerRef} className="mask-layer"
                   style={{ opacity: maskVisible ? (maskAlpha ?? 0.75) : 0 }} />
+        )}
+        {rwarpLayerRef && (
+          <>
+            <canvas ref={rwarpLayerRef} className="rwarp-layer"
+                    style={{ opacity: rwarpVisible ? (rwarpAlpha ?? 0.5) : 0 }} />
+            <canvas ref={rwarpMeshRef} className="rwarp-mesh"
+                    style={{ opacity: rwarpVisible ? 0.9 : 0 }} />
+          </>
         )}
         <KeypointOverlay
           side={side} kps={kps} tf={tf} colorMap={colorMap} pairNo={pairNo}

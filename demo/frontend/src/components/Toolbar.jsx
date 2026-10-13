@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
 import { visibleMethods } from '../cv/methods';
-import { GREEN_MAX_NORM } from '../warp';
 
 const FALLBACK = [{ id: 'orb_cv', label: 'orb_cv', group: 'ORB' }];
 
@@ -37,6 +36,22 @@ const IcLayers = () => (
   </svg>
 );
 
+// триангуляция: треугольник с внутренними рёбрами
+const IcMesh = () => (
+  <svg {...SV}>
+    <path d="M12 2.6 22 20H2Z" />
+    <path d="M12 13.5V2.6M12 13.5 2 20M12 13.5 22 20" />
+  </svg>
+);
+
+// режим деформации: треугольник с «выбитой» вершиной (×)
+const IcDeform = () => (
+  <svg {...SV}>
+    <path d="M12 4.5 21.5 20.5h-19Z" />
+    <path d="m10 2.5 4 4M14 2.5l-4 4" />
+  </svg>
+);
+
 // маски: область-«капля»
 const IcMask = () => (
   <svg {...SV}>
@@ -49,6 +64,15 @@ const IcMask = () => (
 const IcFilter = () => (
   <svg {...SV}>
     <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3Z" />
+  </svg>
+);
+
+// проверка с эталоном: лупа с галочкой
+const IcCheck = () => (
+  <svg {...SV}>
+    <circle cx="10.5" cy="10.5" r="6.5" />
+    <path d="m15.5 15.5 4.5 4.5" />
+    <path d="m7.8 10.6 1.9 1.9 3.5-3.5" />
   </svg>
 );
 
@@ -65,10 +89,13 @@ export function Toolbar({
   method, setMethod, methodsMeta, onReset,
   busy, showAllLines, onToggleAllLines,
   onJsonFile, onSaveJson, connectMode, onToggleConnect,
+  deformMode, onToggleDeform,
   onGenerate, canGenerate,
   canOverlay, overlayVisible, onToggleOverlay,
   overlayAlpha, setOverlayAlpha,
-  greenCount, pairCount,
+  canRWarp, rwarpVisible, onToggleRWarp,
+  rwarpAlpha, setRWarpAlpha,
+  warpCount, pairCount,
   onSaveImage, canSave,
   maskVisible, onToggleMask, maskBusy, maskError, canMask,
   maskAlpha, setMaskAlpha, maskCount, maskMs,
@@ -78,6 +105,7 @@ export function Toolbar({
   semanticClasses, excludedClasses, setExcludedClasses,
   classMargin, setClassMargin, geometryFilterOn, setGeometryFilterOn,
   classFilterBusy, classFilterError, marginSavedCount,
+  onCheckFile, canCheck, checkBusy, checkError,
 }) {
   const list = visibleMethods(methodsMeta);
   const entries = list.length ? list : FALLBACK;
@@ -95,6 +123,7 @@ export function Toolbar({
   const [moreOpen, setMoreOpen] = useState(false);
   const genRef = useRef(null);
   const moreRef = useRef(null);
+  const checkInputRef = useRef(null);
 
   useEffect(() => {
     if (!menuOpen && !moreOpen) return;
@@ -124,10 +153,17 @@ export function Toolbar({
     onGenerate();
   };
 
+  const excluded = Math.max(0, pairCount - warpCount);
   const overlayTitle = canOverlay
-    ? `Наложить правое изображение на левое по ${greenCount} зелёным парам ` +
-      `(деформируемость ≤ ${GREEN_MAX_NORM}); пар всего: ${pairCount}`
-    : 'Нужны обе картинки и ≥ 3 зелёных пар (деформируемость должна быть посчитана)';
+    ? `Наложить правое изображение на левое по ${warpCount} парам триангуляции ` +
+      `(всего пар: ${pairCount}${excluded ? `, исключено кликом: ${excluded}` : ''})`
+    : 'Нужны обе картинки и ≥ 3 пар (исключённые кликом не считаются)';
+
+  const rwarpTitle = canRWarp
+    ? `Наложить деформированное правое (warp B→A) на неизменённое правое · ` +
+      `сетка по ${warpCount} парам` +
+      (excluded ? ` (исключено кликом: ${excluded})` : '')
+    : 'Нужны обе картинки и ≥ 3 пар (исключённые кликом не считаются)';
 
   const maskTitle = !canMask
     ? 'Сначала загрузите правое изображение'
@@ -145,6 +181,15 @@ export function Toolbar({
     : filterOn
       ? 'Выключить фильтры и показать все точки'
       : 'Настроить запрещённые классы и марджин для точек правого снимка';
+
+  const checkTitle = !canCheck
+    ? 'Нужно правое изображение и рассчитанное наложение (кнопка «слои»)'
+    : checkBusy
+      ? 'Считаем метрики сходства с эталоном…'
+      : checkError
+        ? `Ошибка: ${checkError}`
+        : 'Проверить с эталоном: MAE, PSNR, SSIM, корреляция и сдвиги — ' +
+          'сравнить начальное изображение и наложенное с выбранным файлом-эталоном';
 
   const closeMenus = () => { setMenuOpen(false); setMoreOpen(false); };
 
@@ -199,6 +244,19 @@ export function Toolbar({
       </button>
 
       <button
+        className={'ibtn' + (deformMode ? ' active' : '')}
+        onClick={onToggleDeform}
+        disabled={busy}
+        title={deformMode
+          ? 'Режим деформации: клик по точке — исключить её пару из триангуляции ' +
+            '(пары и JSON не меняются); повторный клик — вернуть. Esc или кнопка — выйти'
+          : 'Режим деформации: клик по точке исключает её пару из триангуляции'}
+        aria-label="Режим деформации"
+      >
+        <IcDeform />
+      </button>
+
+      <button
         className={'ibtn' + (overlayVisible ? ' active' : '')}
         onClick={onToggleOverlay}
         disabled={!canOverlay && !overlayVisible}
@@ -216,6 +274,29 @@ export function Toolbar({
               type="range" min="0" max="1" step="0.05"
               value={overlayAlpha}
               onChange={(e) => setOverlayAlpha(Number(e.target.value))}
+            />
+          </label>
+        </div>
+      )}
+
+      <button
+        className={'ibtn' + (rwarpVisible ? ' active' : '')}
+        onClick={onToggleRWarp}
+        disabled={!canRWarp && !rwarpVisible}
+        title={rwarpTitle}
+        aria-label="Наложить деформированное правое на правое"
+      >
+        <IcMesh />
+      </button>
+
+      {rwarpVisible && (
+        <div className="ctxbar">
+          <label className="alpha-ctl" title="Прозрачность наложения warp поверх правого изображения">
+            <span>α</span>
+            <input
+              type="range" min="0" max="1" step="0.05"
+              value={rwarpAlpha}
+              onChange={(e) => setRWarpAlpha(Number(e.target.value))}
             />
           </label>
         </div>
@@ -325,6 +406,28 @@ export function Toolbar({
           </span>
         </div>
       )}
+
+      {/* проверка с эталоном: выберите файл — сравнит начальное и наложенное */}
+      <button
+        className={'ibtn' + (checkBusy ? ' busy' : '')}
+        onClick={() => checkInputRef.current?.click()}
+        disabled={!canCheck || checkBusy}
+        title={checkTitle}
+        aria-label="Проверить с эталоном"
+      >
+        <IcCheck />
+      </button>
+      <input
+        ref={checkInputRef}
+        type="file"
+        accept="image/*,.ppm,.pgm,.pnm"
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f && canCheck && !checkBusy) onCheckFile(f);
+          e.target.value = '';
+        }}
+      />
 
       {/* всё второстепенное — в одном меню */}
       <div className="menuwrap" ref={moreRef}>

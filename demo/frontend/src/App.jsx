@@ -10,6 +10,7 @@ import { useClassFilter } from './hooks/useClassFilter';
 import { loadImage, screenPoint } from './cv/loadImage';
 import { fetchMethods } from './cv/methods';
 import { fetchSegmentation } from './cv/segment';
+import { fetchSimilarity } from './cv/similarity';
 import { pairColor } from './constants';
 import { clampKp, removePoint, setPair, unmatchedIdx } from './points';
 import { parsePointsJson, serializePointsJson, downloadJson } from './jsonPoints';
@@ -19,7 +20,7 @@ import {
   MIN_POINTS_FOR_IMPORTANCE,
 } from './importance';
 import {
-  selectGreenPairs, greenPairCount, warpRightToLeft,
+  selectWarpPairs, warpPairCount, warpWithMesh,
   compositeOverlay, downloadCanvas,
 } from './warp';
 
@@ -53,6 +54,9 @@ export default function App() {
   // --- режим соединения
   const [connectMode, setConnectMode] = useState(false);
   const [connectFrom, setConnectFrom] = useState(null);
+  // --- режим деформации: клик по точке — исключить её пару из триангуляции
+  // (мягкое исключение, флаг ex на точке; пары и JSON не меняются)
+  const [deformMode, setDeformMode] = useState(false);
 
   // --- правая панель: два независимых сайдбара
   const [pairsOpen, setPairsOpen] = useState(false);
@@ -80,9 +84,15 @@ export default function App() {
   // --- наложение правого изображения на левое (по зелёным парам)
   const [overlayVisible, setOverlayVisible] = useState(false);
   const [overlayAlpha, setOverlayAlpha] = useState(0.5);
-  const [overlay, setOverlay] = useState(null);        // { warped, green, total }
+  const [overlay, setOverlay] = useState(null);        // { warped, edges, green, total }
   const overlayLayerRef = useRef(null);
   const overlayGenRef = useRef(0);
+
+  // --- то же наложение поверх правой (неизменённой) картинки + сетка триангуляции
+  const [rwarpVisible, setRWarpVisible] = useState(false);
+  const [rwarpAlpha, setRWarpAlpha] = useState(0.5);
+  const rwarpLayerRef = useRef(null);
+  const rwarpMeshRef = useRef(null);
 
   // --- маски Mask2Former поверх правой картинки
   const [maskVisible, setMaskVisible] = useState(false);
@@ -100,6 +110,13 @@ export default function App() {
   const [excludedClasses, setExcludedClasses] = useState([]);
   const [classMargin, setClassMargin] = useState(5);
   const [geometryFilterOn, setGeometryFilterOn] = useState(false);
+
+  // --- проверка с эталоном: метрики сходства начального и наложенного
+  const [checkBusy, setCheckBusy] = useState(false);
+  const [checkError, setCheckError] = useState(null);
+  const [checkData, setCheckData] = useState(null);   // { refName, ref_size, compared_size, initial, warped, ... }
+  const [checkOpen, setCheckOpen] = useState(false);
+  const checkGenRef = useRef(0);
 
   // --- метаданные методов с бэка
   useEffect(() => {
@@ -176,34 +193,42 @@ export default function App() {
   // значение деформируемости согласовано с текущими matches
   const impReady = !!(importance && importance.values.length === matches.length);
 
-  // --- наложение: доступные «зелёные» пары (деформируемость ≤ GREEN_MAX_NORM)
-  const greenCount = useMemo(
-    () => greenPairCount(matches, impReady ? importance : null),
-    [matches, impReady, importance],
+  // --- наложение: пары в триангуляции (все пары минус исключённые кликом)
+  const warpCount = useMemo(
+    () => warpPairCount(matches, kpsA, kpsB),
+    [matches, kpsA, kpsB],
   );
-  const canOverlay = !!(imgA && imgB && greenCount >= 3);
+  const canOverlay = !!(imgA && imgB && warpCount >= 3);
 
-  // --- расчёт warp (дебаунс 300мс), пока наложение видимо;
-  // скрыли наложение — устаревший результат не храним.
+  // --- расчёт warp (дебаунс 300мс), пока любое из наложений видимо;
+  // скрыли оба — устаревший результат не храним.
+  // Пары считаются синхронно (без ожидания деформируемости): во время
+  // дебаунса висит прежний warp, поэтому окна гашения при правке пар
+  // или исключении точек нет.
   useEffect(() => {
-    if (!overlayVisible || !imgA || !imgB) {
+    if ((!overlayVisible && !rwarpVisible) || !imgA || !imgB) {
       setOverlay(null);
       return;
     }
     const gen = ++overlayGenRef.current;
-    const pairs = selectGreenPairs(matches, kpsA, kpsB, impReady ? importance : null);
+    const pairs = selectWarpPairs(matches, kpsA, kpsB);
     if (!pairs) {
-      setOverlay({ warped: null, green: 0, total: matches.length });
+      setOverlay({ warped: null, edges: [], pairs: 0, total: matches.length });
       return;
     }
     const timer = setTimeout(() => {
       if (overlayGenRef.current !== gen) return;
-      const warped = warpRightToLeft(imgA, imgB, pairs.left, pairs.right);
+      const res = warpWithMesh(imgA, imgB, pairs.left, pairs.right);
       if (overlayGenRef.current !== gen) return;
-      setOverlay({ warped, green: pairs.left.length, total: matches.length });
+      setOverlay({
+        warped: res ? res.canvas : null,
+        edges: res ? res.edges : [],
+        pairs: pairs.left.length,
+        total: matches.length,
+      });
     }, 300);
     return () => clearTimeout(timer);
-  }, [overlayVisible, imgA, imgB, kpsA, kpsB, matches, impReady, importance]);
+  }, [overlayVisible, rwarpVisible, imgA, imgB, kpsA, kpsB, matches]);
 
   // --- отрисовка слоя наложения в левой панели
   const overlayWarped = overlay ? overlay.warped : null;
@@ -217,7 +242,35 @@ export default function App() {
     if (ctx) ctx.drawImage(overlayWarped, 0, 0);
   }, [overlayWarped]);
 
+  // --- отрисовка того же warp поверх правой (неизменённой) картинки + сетка
+  const rwarpOn = !!(rwarpVisible && overlay && overlay.warped);
+  useEffect(() => {
+    const c = rwarpLayerRef.current;
+    const m = rwarpMeshRef.current;
+    if (!c || !m) return;
+    const w = (rwarpOn && overlay) ? overlay.warped : null;
+    if (!w) {
+      c.width = 0; c.height = 0;
+      m.width = 0; m.height = 0;
+      return;
+    }
+    c.width = w.width; c.height = w.height;
+    m.width = w.width; m.height = w.height;
+    const ctx = c.getContext('2d');
+    if (ctx) ctx.drawImage(w, 0, 0);
+    const g = m.getContext('2d');
+    const edges = overlay.edges;
+    if (g && edges && edges.length) {
+      g.strokeStyle = 'rgba(255,255,255,0.9)';
+      g.lineWidth = 1;
+      g.beginPath();
+      for (const [x1, y1, x2, y2] of edges) { g.moveTo(x1, y1); g.lineTo(x2, y2); }
+      g.stroke();
+    }
+  }, [rwarpOn, overlay]);
+
   const toggleOverlay = useCallback(() => setOverlayVisible(v => !v), []);
+  const toggleRWarp = useCallback(() => setRWarpVisible(v => !v), []);
 
   // --- Mask2Former: смена правой картинки обесценивает результат
   useEffect(() => {
@@ -300,6 +353,55 @@ export default function App() {
     setFilterOn(v => !v);
   }, [canFilter]);
 
+  // --- проверка с эталоном: нужен правое изображение и рассчитанное наложение
+  const canCheck = !!(imgB && overlay && overlay.warped);
+
+  const handleCheckFile = useCallback(async (file) => {
+    if (!file || !imgB || !overlay || !overlay.warped) {
+      console.warn('Проверка: нужны правое изображение и рассчитанное наложение');
+      return;
+    }
+    let refImg;
+    try {
+      refImg = await loadImage(file);
+    } catch (e) {
+      console.error('Не удалось открыть эталон:', e);
+      setCheckError(String(e?.message || e));
+      return;
+    }
+
+    const gen = ++checkGenRef.current;
+    setCheckBusy(true);
+    setCheckError(null);
+    try {
+      const warpedUrl = overlay.warped.toDataURL('image/png');
+      const res = await fetchSimilarity(refImg.dataUrl, imgB.dataUrl, warpedUrl);
+      if (checkGenRef.current !== gen) return;
+      setCheckData({ refName: refImg.name || 'эталон', ...res });
+      setCheckOpen(true);
+      console.info(
+        `Проверка с «${refImg.name}»: SSIM начальное ${res.initial.ssim?.toFixed(3)} → ` +
+        `наложенное ${res.warped.ssim?.toFixed(3)} · общая область ` +
+        `${res.compared_size[0]}×${res.compared_size[1]}`);
+    } catch (e) {
+      if (checkGenRef.current !== gen) return;
+      console.error('Проверка с эталоном:', e);
+      setCheckError(String(e?.message || e));
+    } finally {
+      if (checkGenRef.current === gen) setCheckBusy(false);
+    }
+  }, [imgB, overlay]);
+
+  // смена картинок или пересчёт наложения обесценивают результат проверки
+  const warpedForCheck = overlay ? overlay.warped : null;
+  useEffect(() => {
+    checkGenRef.current++;
+    setCheckData(null);
+    setCheckError(null);
+    setCheckBusy(false);
+    setCheckOpen(false);
+  }, [imgA, imgB, warpedForCheck]);
+
   const canSave = !!(overlay && overlay.warped && imgA);
 
   const handleSaveImage = useCallback((kind) => {
@@ -310,10 +412,10 @@ export default function App() {
     const base = (imgA.name || 'overlay').replace(/\.[^.]+$/, '') || 'overlay';
     if (kind === 'warped') {
       downloadCanvas(overlay.warped, `${base}_warped.png`);
-      console.info(`Сохранено деформированное правое: ${overlay.green} зелёных пар`);
+      console.info(`Сохранено деформированное правое: ${overlay.pairs} пар в триангуляции`);
     } else {
       downloadCanvas(compositeOverlay(imgA, overlay.warped, overlayAlpha), `${base}_overlay.png`);
-      console.info(`Сохранён композит: ${overlay.green} зелёных пар, α=${overlayAlpha}`);
+      console.info(`Сохранён композит: ${overlay.pairs} пар в триангуляции, α=${overlayAlpha}`);
     }
   }, [overlay, imgA, overlayAlpha]);
 
@@ -371,7 +473,7 @@ export default function App() {
   }, [imgA, imgB, fitView]);
 
   // --- рефит при открытии/закрытии сайдбаров: картинки не должны обрезаться
-  useEffect(() => { fitView(); }, [pairsOpen, impOpen, fitView]);
+  useEffect(() => { fitView(); }, [pairsOpen, impOpen, checkOpen, fitView]);
 
   // --- координаты относительно .panels-main: линии рисуются только внутри картинок
   const toMain = useCallback((p) => {
@@ -403,7 +505,7 @@ export default function App() {
     update();
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
-  }, [selected, tf, matches, kpsA, kpsB, findMatch, toMain, pairsOpen, impOpen, filterSets]);
+  }, [selected, tf, matches, kpsA, kpsB, findMatch, toMain, pairsOpen, impOpen, checkOpen, filterSets]);
 
   const consumePointDrag = () => {
     if (kpDragMoved.current) { kpDragMoved.current = false; return true; }
@@ -453,9 +555,16 @@ export default function App() {
     };
   }, []);
 
-  // --- клик по точке: выбор или создание пары (режим «Соединить»)
+  // --- клик по точке: режим деформации (исключить/вернуть), «Соединить» или выбор
   const handlePointClick = useCallback((side, idx) => {
     if (consumePointDrag()) return;
+
+    if (deformMode) {
+      // мягкое исключение: только флаг ex на точке — пары и JSON не меняются
+      const flip = (arr) => arr.map((k, i) => (i === idx ? { ...k, ex: !k.ex } : k));
+      if (side === 'a') setKpsA(flip); else setKpsB(flip);
+      return;
+    }
 
     if (connectMode) {
       if (!connectFrom) { setConnectFrom({ side, idx }); return; }
@@ -477,7 +586,7 @@ export default function App() {
 
     setSelected(s =>
       (s && s.side === side && s.idx === idx) ? null : { side, idx });
-  }, [connectMode, connectFrom]);
+  }, [deformMode, connectMode, connectFrom]);
 
   // --- двойной клик по пустому месту — новая точка
   const handlePanelDblClick = useCallback((side, e) => {
@@ -506,8 +615,10 @@ export default function App() {
     const onKey = (e) => {
       if (e.key === 'Escape') {
         setConnectFrom(null);
+        setDeformMode(false);
         setPairsOpen(false);
         setImpOpen(false);
+        setCheckOpen(false);
         return;
       }
       if (e.key !== 'Delete' && e.key !== 'Backspace') return;
@@ -542,14 +653,18 @@ export default function App() {
         if (!ka || !kb) return;
         const p1 = toMain(screenPoint(pa, tf, ka));
         const p2 = toMain(screenPoint(pb, tf, kb));
-        out.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, color: pairColor(i) });
+        out.push({
+          x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y,
+          color: pairColor(i),
+          dim: !!(ka.ex || kb.ex),           // пара вне триангуляции
+        });
       });
       setAllLines(out);
     };
     update();
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
-  }, [showAllLines, tf, matches, kpsA, kpsB, toMain, pairsOpen, impOpen, filterSets]);
+  }, [showAllLines, tf, matches, kpsA, kpsB, toMain, pairsOpen, impOpen, checkOpen, filterSets]);
 
   // --- загрузка одной картинки в конкретную рамку
   const handleFile = useCallback(async (file, side) => {
@@ -609,10 +724,19 @@ export default function App() {
     console.info(`Сохранено: ${matches.length} пар · ${ua}/${ub} непарных`);
   }, [kpsA, kpsB, matches, imgA, imgB]);
 
+  // режимы взаимоисключимы: включили один — второй выключается
   const toggleConnect = useCallback(() => {
-    setConnectMode(v => !v);
+    const on = !connectMode;
+    setConnectMode(on);
     setConnectFrom(null);
-  }, []);
+    if (on) setDeformMode(false);
+  }, [connectMode]);
+
+  const toggleDeform = useCallback(() => {
+    const on = !deformMode;
+    setDeformMode(on);
+    if (on) { setConnectMode(false); setConnectFrom(null); }
+  }, [deformMode]);
 
   const canGenerate = !!(cvReady && imgA && imgB);
 
@@ -630,6 +754,8 @@ export default function App() {
         onSaveJson={handleSaveJson}
         connectMode={connectMode}
         onToggleConnect={toggleConnect}
+        deformMode={deformMode}
+        onToggleDeform={toggleDeform}
         onGenerate={handleGenerate}
         canGenerate={canGenerate}
         canOverlay={canOverlay}
@@ -637,7 +763,12 @@ export default function App() {
         onToggleOverlay={toggleOverlay}
         overlayAlpha={overlayAlpha}
         setOverlayAlpha={setOverlayAlpha}
-        greenCount={greenCount}
+        canRWarp={canOverlay}
+        rwarpVisible={rwarpVisible}
+        onToggleRWarp={toggleRWarp}
+        rwarpAlpha={rwarpAlpha}
+        setRWarpAlpha={setRWarpAlpha}
+        warpCount={warpCount}
         pairCount={matches.length}
         onSaveImage={handleSaveImage}
         canSave={canSave}
@@ -669,6 +800,10 @@ export default function App() {
         classFilterBusy={classFilter.busy}
         classFilterError={classFilter.error}
         marginSavedCount={classFilter.savedCount}
+        onCheckFile={handleCheckFile}
+        canCheck={canCheck}
+        checkBusy={checkBusy}
+        checkError={checkError}
       />
 
       <div className="panels">
@@ -707,6 +842,10 @@ export default function App() {
             maskLayerRef={maskLayerRef}
             maskAlpha={maskAlpha}
             maskVisible={maskVisible}
+            rwarpLayerRef={rwarpLayerRef}
+            rwarpMeshRef={rwarpMeshRef}
+            rwarpAlpha={rwarpAlpha}
+            rwarpVisible={rwarpVisible}
             hidden={filterSets ? filterSets.hiddenB : null}
           />
           <ConnectionLine lines={allLines} line={line} />
@@ -722,6 +861,8 @@ export default function App() {
           importanceBusy={importanceBusy}
           hiddenA={filterSets ? filterSets.hiddenA : null}
           hiddenB={filterSets ? filterSets.hiddenB : null}
+          checkOpen={checkOpen} setCheckOpen={setCheckOpen}
+          checkData={checkData} checkBusy={checkBusy} checkError={checkError}
         />
       </div>
     </div>

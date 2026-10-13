@@ -10,13 +10,15 @@ from . import matchers   # noqa: F401
 from . import registry
 from . import segment
 from .keypoint_filter import decode_class_map, filter_by_mask
-from .image_io import decode_image_b64
+from . import similarity
+from .image_io import decode_image_b64, decode_image_rgb_b64
 from .schemas import (
     DetectRequest, DetectResponse, Detection,
     Match, MethodsResponse, DetectorMeta,
     PipelineRequest, PipelineResponse,
     SegmentRequest, SegmentResponse, SegmentInstance,
     KeypointFilterRequest, KeypointFilterResponse,
+    SimilarityRequest, SimilarityResponse,
 )
 
 
@@ -144,6 +146,24 @@ def filter_keypoints(req: KeypointFilterRequest):
                               req.excluded_classes, req.margin)
     except (ValueError, TypeError) as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/similarity", response_model=SimilarityResponse)
+def similarity_endpoint(req: SimilarityRequest):
+    """Сравнивает эталон с начальным и с наложенным изображением."""
+    try:
+        ref = decode_image_rgb_b64(req.image_ref.image_b64)
+        initial = decode_image_rgb_b64(req.image_initial.image_b64)
+        warped = decode_image_rgb_b64(req.image_warped.image_b64)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Bad image: {e}")
+
+    try:
+        out = similarity.compare_all(ref, initial, warped, tile=req.tile)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Similarity failed: {e}")
+
+    return SimilarityResponse(**out)
 
 '''
 @app.post("/api/neighbors", response_model=NeighborsResponse)

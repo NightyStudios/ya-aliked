@@ -2,36 +2,34 @@ import Delaunator from 'delaunator';
 import { fitAffine } from './importance';
 
 // Кусочно-аффинный warp правого изображения в координаты левого:
-// триангуляция Делоне по «зелёным» парам (деформируемость ≤ GREEN_MAX_NORM),
-// для каждого треугольника — аффин B→A, рендер через clip + setTransform.
+// триангуляция Делоне по всем парам, кроме исключённых в режиме деформации
+// (точка с флагом ex), для каждого треугольника — аффин B→A, рендер через
+// clip + setTransform.
 
-export const GREEN_MAX_NORM = 0.5;
-
-// Пары с конечной деформируемостью и norm ≤ 0.5.
-// null — если деформируемость не готова или зелёных пар меньше 3
-// (не из чего собрать треугольник).
-export function selectGreenPairs(matches, kpsA, kpsB, importance) {
-  if (!importance || importance.values.length !== matches.length) return null;
+// Пары для триангуляции: все, кроме исключённых (ex на любой из точек)
+// и с неконечными координатами. null — если пар меньше 3.
+export function selectWarpPairs(matches, kpsA, kpsB) {
   const left = [], right = [];
-  matches.forEach((m, i) => {
-    const v = importance.values[i];
-    const n = importance.norms[i];
-    if (!Number.isFinite(v) || !Number.isFinite(n) || n > GREEN_MAX_NORM) return;
+  for (const m of matches) {
     const a = kpsA[m.aIdx], b = kpsB[m.bIdx];
-    if (!a || !b) return;
+    if (!a || !b || a.ex || b.ex) continue;
+    if (!Number.isFinite(a.x) || !Number.isFinite(a.y) ||
+        !Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
     left.push(a);
     right.push(b);
-  });
+  }
   return left.length >= 3 ? { left, right } : null;
 }
 
-// Сколько пар проходит фильтр «зелёных» (для тултипов/кнопок).
-export function greenPairCount(matches, importance) {
-  if (!importance || importance.values.length !== matches.length) return 0;
+// Сколько пар войдёт в триангуляцию (для кнопок/подсказок).
+export function warpPairCount(matches, kpsA, kpsB) {
   let k = 0;
-  for (let i = 0; i < matches.length; i++) {
-    const v = importance.values[i], n = importance.norms[i];
-    if (Number.isFinite(v) && Number.isFinite(n) && n <= GREEN_MAX_NORM) k++;
+  for (const m of matches) {
+    const a = kpsA[m.aIdx], b = kpsB[m.bIdx];
+    if (!a || !b || a.ex || b.ex) continue;
+    if (!Number.isFinite(a.x) || !Number.isFinite(a.y) ||
+        !Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
+    k++;
   }
   return k;
 }
@@ -85,8 +83,10 @@ function expandTri(tri, px = 0.75) {
 }
 
 // Деформирует правое изображение в координаты левого.
-// Возвращает canvas размера imgA (без фона) или null при ошибке.
-export function warpRightToLeft(imgA, imgB, left, right) {
+// Возвращает { canvas, edges } — canvas размера imgA (без фона) и рёбра
+// триангуляции [x1,y1,x2,y2] в координатах A (для сетки наложения).
+// null при ошибке.
+export function warpWithMesh(imgA, imgB, left, right) {
   if (!imgA || !imgB || !imgA.el || !imgB.el) return null;
   if (left.length < 3 || left.length !== right.length) return null;
 
@@ -106,11 +106,26 @@ export function warpRightToLeft(imgA, imgB, left, right) {
     return null;
   }
 
+  const edges = [];
+  const seen = new Set();
+  const pushEdge = (i, j) => {
+    const key = i < j ? `${i}-${j}` : `${j}-${i}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const a = L[i], b = L[j];
+    if (a && b) edges.push([a.x, a.y, b.x, b.y]);
+  };
+
   for (let i = 0; i < tris.length; i += 3) {
     const src = [R[tris[i]], R[tris[i + 1]], R[tris[i + 2]]];
     const dst = [L[tris[i]], L[tris[i + 1]], L[tris[i + 2]]];
     const m = affineFromTri(src, dst);
     if (!m) continue;
+
+    // сетка — по не расширенным вершинам (expandTri ниже только против швов)
+    pushEdge(tris[i], tris[i + 1]);
+    pushEdge(tris[i + 1], tris[i + 2]);
+    pushEdge(tris[i + 2], tris[i]);
 
     const clip = expandTri(dst);
     ctx.save();
@@ -124,7 +139,12 @@ export function warpRightToLeft(imgA, imgB, left, right) {
     ctx.drawImage(imgB.el, 0, 0);
     ctx.restore();
   }
-  return out;
+  return { canvas: out, edges };
+}
+
+// Совместимая обёртка над warpWithMesh — только canvas.
+export function warpRightToLeft(imgA, imgB, left, right) {
+  return warpWithMesh(imgA, imgB, left, right)?.canvas ?? null;
 }
 
 // Композит для сохранения: левое изображение + деформированное правое.
