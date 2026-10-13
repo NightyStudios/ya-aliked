@@ -12,6 +12,7 @@ import { fetchSegmentation } from './cv/segment';
 import { pairColor } from './constants';
 import { clampKp, removePoint, setPair, unmatchedIdx } from './points';
 import { parsePointsJson, serializePointsJson, downloadJson } from './jsonPoints';
+import { computeHiddenSets } from './filterPoints';
 import {
   computeImportanceRange, normalize, buildPairArrays,
   MIN_POINTS_FOR_IMPORTANCE,
@@ -79,8 +80,6 @@ export default function App() {
   const [overlayVisible, setOverlayVisible] = useState(false);
   const [overlayAlpha, setOverlayAlpha] = useState(0.5);
   const [overlay, setOverlay] = useState(null);        // { warped, green, total }
-  // сколько самых деформируемых пар не учитывать при наложении (ползунок)
-  const [excludeTop, setExcludeTop] = useState(0);
   const overlayLayerRef = useRef(null);
   const overlayGenRef = useRef(0);
 
@@ -89,9 +88,14 @@ export default function App() {
   const [maskBusy, setMaskBusy] = useState(false);
   const [maskError, setMaskError] = useState(null);
   const [maskAlpha, setMaskAlpha] = useState(0.75);
-  const [maskData, setMaskData] = useState(null);   // { imgB, el, instances, elapsedMs }
+  const [maskData, setMaskData] = useState(null);   // { imgB, el, boundary, instances, elapsedMs }
   const maskLayerRef = useRef(null);
   const maskGenRef = useRef(0);
+
+  // --- фильтр точек после Mask2Former: границы областей ∪ важные для деформации
+  const [filterOn, setFilterOn] = useState(false);
+  const [filterImpThr, setFilterImpThr] = useState(0.5);   // порог нормы деформируемости
+  const [filterRadius, setFilterRadius] = useState(4);     // радиус границы, px полного кадра
 
   // --- метаданные методов с бэка
   useEffect(() => {
@@ -168,15 +172,10 @@ export default function App() {
   // значение деформируемости согласовано с текущими matches
   const impReady = !!(importance && importance.values.length === matches.length);
 
-  // предел ползунка: минимум одна пара должна остаться
-  const maxExclude = Math.max(0, matches.length - 1);
-  // фактическое исключение — внутри допустимого диапазона
-  const excludeN = Math.min(Math.max(0, Math.floor(excludeTop)), maxExclude);
-
   // --- наложение: доступные «зелёные» пары (деформируемость ≤ GREEN_MAX_NORM)
   const greenCount = useMemo(
-    () => greenPairCount(matches, impReady ? importance : null, excludeN),
-    [matches, impReady, importance, excludeN],
+    () => greenPairCount(matches, impReady ? importance : null),
+    [matches, impReady, importance],
   );
   const canOverlay = !!(imgA && imgB && greenCount >= 3);
 
@@ -188,7 +187,7 @@ export default function App() {
       return;
     }
     const gen = ++overlayGenRef.current;
-    const pairs = selectGreenPairs(matches, kpsA, kpsB, impReady ? importance : null, excludeN);
+    const pairs = selectGreenPairs(matches, kpsA, kpsB, impReady ? importance : null);
     if (!pairs) {
       setOverlay({ warped: null, green: 0, total: matches.length });
       return;
@@ -200,7 +199,7 @@ export default function App() {
       setOverlay({ warped, green: pairs.left.length, total: matches.length });
     }, 300);
     return () => clearTimeout(timer);
-  }, [overlayVisible, imgA, imgB, kpsA, kpsB, matches, impReady, importance, excludeN]);
+  }, [overlayVisible, imgA, imgB, kpsA, kpsB, matches, impReady, importance]);
 
   // --- отрисовка слоя наложения в левой панели
   const overlayWarped = overlay ? overlay.warped : null;
@@ -222,6 +221,7 @@ export default function App() {
     setMaskData(null);
     setMaskError(null);
     setMaskBusy(false);
+    setFilterOn(false);                   // фильтруем по границам — без масок он бессмысленен
   }, [imgB]);
 
   const runMask = useCallback(async () => {
@@ -270,6 +270,26 @@ export default function App() {
   }, [maskEl, imgB, maskVisible]);
 
   const maskCount = maskData ? maskData.instances.length : 0;
+
+  // --- фильтр точек: границы областей Mask2Former ∪ важные для деформации
+  const maskBoundary = maskData && maskData.imgB === imgB ? maskData.boundary : null;
+  const canFilter = !!maskBoundary;
+
+  const filterSets = useMemo(() => {
+    if (!filterOn || !maskBoundary) return null;
+    return computeHiddenSets({
+      kpsA, kpsB, matches,
+      importance: impReady ? importance : null,
+      boundary: maskBoundary, imgB,
+      impThr: filterImpThr, radius: filterRadius,
+    });
+  }, [filterOn, maskBoundary, kpsA, kpsB, matches,
+      impReady, importance, imgB, filterImpThr, filterRadius]);
+
+  const toggleFilter = useCallback(() => {
+    if (!canFilter) return;
+    setFilterOn(v => !v);
+  }, [canFilter]);
 
   const canSave = !!(overlay && overlay.warped && imgA);
 
@@ -361,6 +381,10 @@ export default function App() {
     const update = () => {
       const pa = panelARef.current, pb = panelBRef.current;
       if (!pa || !pb) return;
+      if (filterSets && (filterSets.hiddenA.has(m.aIdx) || filterSets.hiddenB.has(m.bIdx))) {
+        setLine(null);                       // пара скрыта фильтром — линию не рисуем
+        return;
+      }
       const ka = kpsA[m.aIdx], kb = kpsB[m.bIdx];
       if (!ka || !kb) return;
       const p1 = toMain(screenPoint(pa, tf, ka));
@@ -370,7 +394,7 @@ export default function App() {
     update();
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
-  }, [selected, tf, matches, kpsA, kpsB, findMatch, toMain, pairsOpen, impOpen]);
+  }, [selected, tf, matches, kpsA, kpsB, findMatch, toMain, pairsOpen, impOpen, filterSets]);
 
   const consumePointDrag = () => {
     if (kpDragMoved.current) { kpDragMoved.current = false; return true; }
@@ -504,6 +528,7 @@ export default function App() {
       if (!pa || !pb) return;
       const out = [];
       matches.forEach((m, i) => {
+        if (filterSets && (filterSets.hiddenA.has(m.aIdx) || filterSets.hiddenB.has(m.bIdx))) return;
         const ka = kpsA[m.aIdx], kb = kpsB[m.bIdx];
         if (!ka || !kb) return;
         const p1 = toMain(screenPoint(pa, tf, ka));
@@ -515,7 +540,7 @@ export default function App() {
     update();
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
-  }, [showAllLines, tf, matches, kpsA, kpsB, toMain, pairsOpen, impOpen]);
+  }, [showAllLines, tf, matches, kpsA, kpsB, toMain, pairsOpen, impOpen, filterSets]);
 
   // --- загрузка одной картинки в конкретную рамку
   const handleFile = useCallback(async (file, side) => {
@@ -603,10 +628,6 @@ export default function App() {
         onToggleOverlay={toggleOverlay}
         overlayAlpha={overlayAlpha}
         setOverlayAlpha={setOverlayAlpha}
-        excludeTop={excludeN}
-        setExcludeTop={setExcludeTop}
-        maxExclude={maxExclude}
-        excludeReady={impReady}
         greenCount={greenCount}
         pairCount={matches.length}
         onSaveImage={handleSaveImage}
@@ -620,6 +641,15 @@ export default function App() {
         setMaskAlpha={setMaskAlpha}
         maskCount={maskCount}
         maskMs={maskData ? maskData.elapsedMs : null}
+        filterOn={filterOn}
+        onToggleFilter={toggleFilter}
+        canFilter={canFilter}
+        filterInfo={filterSets}
+        filterImpThr={filterImpThr}
+        setFilterImpThr={setFilterImpThr}
+        filterRadius={filterRadius}
+        setFilterRadius={setFilterRadius}
+        filterReady={impReady}
       />
 
       <div className="panels">
@@ -639,6 +669,7 @@ export default function App() {
             dragging={dragging}
             overlayLayerRef={overlayLayerRef}
             overlayAlpha={overlayAlpha}
+            hidden={filterSets ? filterSets.hiddenA : null}
           />
           <Panel
             side="b" img={imgB} kps={kpsB} tf={tf} panelRef={panelBRef}
@@ -657,6 +688,7 @@ export default function App() {
             maskLayerRef={maskLayerRef}
             maskAlpha={maskAlpha}
             maskVisible={maskVisible}
+            hidden={filterSets ? filterSets.hiddenB : null}
           />
           <ConnectionLine lines={allLines} line={line} />
         </div>
@@ -669,6 +701,8 @@ export default function App() {
           setHovered={setHovered}
           importance={impReady ? importance : null}
           importanceBusy={importanceBusy}
+          hiddenA={filterSets ? filterSets.hiddenA : null}
+          hiddenB={filterSets ? filterSets.hiddenB : null}
         />
       </div>
     </div>

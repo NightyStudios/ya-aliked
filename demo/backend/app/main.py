@@ -123,6 +123,7 @@ def segment_image_endpoint(req: SegmentRequest):
 
     return SegmentResponse(
         overlay_png_b64=out["overlay_png_b64"],
+        boundary_png_b64=out["boundary_png_b64"],
         instances=[SegmentInstance(**i) for i in out["instances"]],
         width=out["width"],
         height=out["height"],

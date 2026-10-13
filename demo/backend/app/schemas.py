@@ -87,14 +87,17 @@ class SegmentRequest(BaseModel):
 
 
 class SegmentInstance(BaseModel):
+    id: int                          # id инстанса в карте сегментации
     label_id: int
     label: str
     score: float
     area: int                      # площадь в пикселях оверлея
+    bbox: List[int]                  # [x0, y0, x1, y1] в координатах оверлея
 
 
 class SegmentResponse(BaseModel):
     overlay_png_b64: str           # RGBA-PNG с масками (прозрачность заложена в канал A)
+    boundary_png_b64: str          # серый PNG карты границ областей (255 = граница)
     instances: List[SegmentInstance]
     width: int                     # размер оверлея — фронт растянет на исходный кадр
     height: int

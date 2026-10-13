@@ -4,7 +4,7 @@ import {
 } from '../constants';
 
 export function KeypointOverlay({
-  side, kps, tf, colorMap, pairNo, normMap,
+  side, kps, tf, colorMap, pairNo, normMap, hidden,
   hovered, setHovered, selected, isActive,
   connectFrom, onPointClick, onStartDrag, dragging,
 }) {
@@ -35,6 +35,7 @@ export function KeypointOverlay({
       {order.map((i) => {
         const kp = kps[i];
         if (!kp) return null;
+        if (hidden && hidden.has(i)) return null;   // точка отсеяна фильтром после масок
         const active = isActive(side, i);
         const mIdx   = colorMap.get(i);
         // цвет по деформируемости — только правая картинка (левая — эталон)

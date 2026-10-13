@@ -8,7 +8,7 @@ export function Panel({
   hovered, setHovered, selected, colorMap, isActive, onFile,
   pairNo, normMap, connectFrom, onPointClick, onStartDrag,
   dragging, overlayLayerRef, overlayAlpha,
-  maskLayerRef, maskAlpha, maskVisible,
+  maskLayerRef, maskAlpha, maskVisible, hidden,
 }) {
   const [over, setOver] = useState(false);
   const inputRef = useRef(null);
@@ -76,7 +76,7 @@ export function Panel({
         )}
         <KeypointOverlay
           side={side} kps={kps} tf={tf} colorMap={colorMap} pairNo={pairNo}
-          normMap={normMap}
+          normMap={normMap} hidden={hidden}
           hovered={hovered} setHovered={setHovered}
           selected={selected} isActive={isActive}
           connectFrom={connectFrom}

@@ -11,9 +11,14 @@ const fmt = (v) => (Math.round(v * 10) / 10).toString();
 export function PointsPanel({
   pairsOpen, setPairsOpen, impOpen, setImpOpen,
   matches, kpsA, kpsB, selected, setSelected, setHovered,
-  importance, importanceBusy,
+  importance, importanceBusy, hiddenA, hiddenB,
 }) {
   const [tab, setTab] = useState('pairs');
+
+  // точка отсеяна фильтром «границы ∪ важные» — строка приглушается
+  const isHidden = (side, idx) =>
+    (side === 'a' ? hiddenA : hiddenB)?.has(idx) || false;
+  const dimCls = (side, idx) => (isHidden(side, idx) ? ' dim' : '');
 
   const ua = unmatchedIdx(kpsA, matches, 'a');
   const ub = unmatchedIdx(kpsB, matches, 'b');
@@ -43,7 +48,7 @@ export function PointsPanel({
         return (
           <button
             key={idx}
-            className={'matchrow unp' + (isActive(side, idx) ? ' active' : '')}
+            className={'matchrow unp' + (isActive(side, idx) ? ' active' : '') + dimCls(side, idx)}
             style={{ '--pair': COLOR_UNMATCHED }}
             onClick={() => pick(side, idx)}
             {...hoverProps(side, idx)}
@@ -82,9 +87,9 @@ export function PointsPanel({
       const kb = kpsB[r.m.bIdx];
       if (!kb) return null;
       return (
-        <button
-          key={r.i}
-          className={'matchrow improw' + (isActive('b', r.m.bIdx) ? ' active' : '')}
+          <button
+            key={r.i}
+            className={'matchrow improw' + (isActive('b', r.m.bIdx) ? ' active' : '') + dimCls('b', r.m.bIdx)}
           style={{ '--pair': pairColor(r.i), '--imp': importanceColor(r.n) }}
           onClick={() => pick('b', r.m.bIdx)}
           {...hoverProps('b', r.m.bIdx)}
@@ -132,9 +137,10 @@ export function PointsPanel({
                   const ka = kpsA[m.aIdx], kb = kpsB[m.bIdx];
                   if (!ka || !kb) return null;
                   return (
-                    <button
-                      key={i}
-                      className={'matchrow' + (isActive('a', m.aIdx) ? ' active' : '')}
+                  <button
+                    key={i}
+                    className={'matchrow' + (isActive('a', m.aIdx) ? ' active' : '')
+                      + dimCls('a', m.aIdx) + dimCls('b', m.bIdx)}
                       style={{ '--pair': pairColor(i) }}
                       onClick={() => pick('a', m.aIdx)}
                       {...hoverProps('a', m.aIdx)}

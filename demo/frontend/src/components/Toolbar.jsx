@@ -4,6 +4,63 @@ import { GREEN_MAX_NORM } from '../warp';
 
 const FALLBACK = [{ id: 'orb_cv', label: 'orb_cv', group: 'ORB' }];
 
+// --- inline-SVG иконки (без внешних зависимостей) ---
+const SV = {
+  width: 17, height: 17, viewBox: '0 0 24 24', fill: 'none',
+  stroke: 'currentColor', strokeWidth: 1.7,
+  strokeLinecap: 'round', strokeLinejoin: 'round',
+};
+
+// детект точек: перекрестие с точками
+const IcPoints = () => (
+  <svg {...SV}>
+    <circle cx="12" cy="12" r="6.5" />
+    <path d="M12 2v3.2M12 18.8V22M2 12h3.2M18.8 12H22" />
+    <circle cx="12" cy="12" r="1.4" fill="currentColor" stroke="none" />
+  </svg>
+);
+
+// соединить пару: звенья цепи
+const IcLink = () => (
+  <svg {...SV}>
+    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+  </svg>
+);
+
+// наложение: слои
+const IcLayers = () => (
+  <svg {...SV}>
+    <path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z" />
+    <path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65" />
+    <path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65" />
+  </svg>
+);
+
+// маски: область-«капля»
+const IcMask = () => (
+  <svg {...SV}>
+    <path d="M12 3c4.6 0 8 3.1 8 7.6 0 5-4.4 10.4-8 10.4s-8-5.4-8-10.4C4 6.1 7.4 3 12 3Z" />
+    <path d="M9.2 10.5h.01M14.8 10.5h.01M9.5 14.6c1.6 1.1 3.4 1.1 5 0" />
+  </svg>
+);
+
+// фильтр: воронка
+const IcFilter = () => (
+  <svg {...SV}>
+    <path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3Z" />
+  </svg>
+);
+
+// ещё: три точки
+const IcMore = () => (
+  <svg {...SV}>
+    <circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+    <circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none" />
+  </svg>
+);
+
 export function Toolbar({
   method, setMethod, methodsMeta, onReset,
   busy, showAllLines, onToggleAllLines,
@@ -11,11 +68,13 @@ export function Toolbar({
   onGenerate, canGenerate,
   canOverlay, overlayVisible, onToggleOverlay,
   overlayAlpha, setOverlayAlpha,
-  excludeTop, setExcludeTop, maxExclude, excludeReady,
   greenCount, pairCount,
   onSaveImage, canSave,
   maskVisible, onToggleMask, maskBusy, maskError, canMask,
   maskAlpha, setMaskAlpha, maskCount, maskMs,
+  filterOn, onToggleFilter, canFilter, filterInfo,
+  filterImpThr, setFilterImpThr, filterRadius, setFilterRadius,
+  filterReady,
 }) {
   const list = visibleMethods(methodsMeta);
   const entries = list.length ? list : FALLBACK;
@@ -28,22 +87,22 @@ export function Toolbar({
 
   const current = entries.find(m => m.id === method) || entries[0];
 
-  // --- выпадающие меню (методы генерации, сохранение)
+  // --- выпадающее меню методов генерации и общее меню «ещё» ---
   const [menuOpen, setMenuOpen] = useState(false);
-  const [saveOpen, setSaveOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const genRef = useRef(null);
-  const saveRef = useRef(null);
+  const moreRef = useRef(null);
 
   useEffect(() => {
-    if (!menuOpen && !saveOpen) return;
+    if (!menuOpen && !moreOpen) return;
     const onDown = (e) => {
       if (genRef.current && !genRef.current.contains(e.target)) setMenuOpen(false);
-      if (saveRef.current && !saveRef.current.contains(e.target)) setSaveOpen(false);
+      if (moreRef.current && !moreRef.current.contains(e.target)) setMoreOpen(false);
     };
     const onKey = (e) => {
       if (e.key !== 'Escape') return;
       setMenuOpen(false);
-      setSaveOpen(false);
+      setMoreOpen(false);
     };
     window.addEventListener('mousedown', onDown);
     window.addEventListener('keydown', onKey);
@@ -51,10 +110,9 @@ export function Toolbar({
       window.removeEventListener('mousedown', onDown);
       window.removeEventListener('keydown', onKey);
     };
-  }, [menuOpen, saveOpen]);
+  }, [menuOpen, moreOpen]);
 
   useEffect(() => { if (busy) setMenuOpen(false); }, [busy]);
-  useEffect(() => { if (!canSave) setSaveOpen(false); }, [canSave]);
 
   // клик по методу: выбрать его и сразу запустить детект
   const pickMethod = (id) => {
@@ -65,51 +123,42 @@ export function Toolbar({
 
   const overlayTitle = canOverlay
     ? `Наложить правое изображение на левое по ${greenCount} зелёным парам ` +
-      `(деформируемость ≤ ${GREEN_MAX_NORM}` +
-      (excludeTop ? `, не учтено ${excludeTop} самых деформируемых` : '') +
-      `); пар всего: ${pairCount}`
+      `(деформируемость ≤ ${GREEN_MAX_NORM}); пар всего: ${pairCount}`
     : 'Нужны обе картинки и ≥ 3 зелёных пар (деформируемость должна быть посчитана)';
+
+  const maskTitle = !canMask
+    ? 'Сначала загрузите правое изображение'
+    : maskBusy
+      ? 'Mask2Former считает маски… (первый запрос может качать веса модели)'
+      : maskError
+        ? `Ошибка: ${maskError}`
+        : maskVisible
+          ? `Скрыть маски Mask2Former · инстансов: ${maskCount}` +
+            (maskMs != null ? ` · ${Math.round(maskMs)} мс` : '')
+          : 'Показать маски Mask2Former поверх правого изображения';
+
+  const filterTitle = !canFilter
+    ? 'Сначала посчитайте маски Mask2Former'
+    : filterOn
+      ? 'Показать все точки (снять фильтр «границы областей ∪ важные»)'
+      : 'Оставить точки на границах областей Mask2Former ' +
+        'или очень важные для деформации (остальные скрыть)';
+
+  const closeMenus = () => { setMenuOpen(false); setMoreOpen(false); };
 
   return (
     <div className="toolbar">
       <div className="title">ALIKE · Keypoint Matcher</div>
 
-      <label className="filebtn" title="Загрузить точки и пары из JSON">
-        Загрузить JSON
-        <input
-          type="file"
-          accept=".json,application/json"
-          hidden
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) onJsonFile(f);
-            e.target.value = '';
-          }}
-        />
-      </label>
-
-      <button onClick={onSaveJson} disabled={busy}
-              title="Сохранить текущие точки и пары в JSON">
-        Сохранить JSON
-      </button>
-
-      <button
-        className={connectMode ? 'active' : ''}
-        onClick={onToggleConnect}
-        disabled={busy}
-        title="Режим соединения: клик по точке на A, затем по точке на B"
-      >
-        Соединить
-      </button>
-
+      {/* генерация точек: иконка + чип метода */}
       <div className="genwrap" ref={genRef}>
         <button
-          className={'generate' + (menuOpen ? ' active' : '')}
+          className={'ibtn gen' + (menuOpen ? ' active' : '') + (busy ? ' busy' : '')}
           onClick={() => setMenuOpen(o => !o)}
           disabled={!canGenerate || busy}
-          title="Выберите метод — детект запустится сразу для обеих картинок"
+          title="Сгенерировать точки — выберите метод, детект запустится сразу для обеих картинок"
         >
-          {busy ? 'Генерация…' : 'Сгенерировать точки'}
+          <IcPoints />
           <span className="gen-method">{current ? (current.label || current.id) : ''}</span>
           <span className="caret">▾</span>
         </button>
@@ -136,110 +185,183 @@ export function Toolbar({
         )}
       </div>
 
+      {/* режимы — компактные иконки-тумблеры */}
       <button
-        className={overlayVisible ? 'active' : ''}
+        className={'ibtn' + (connectMode ? ' active' : '')}
+        onClick={onToggleConnect}
+        disabled={busy}
+        title="Соединить: клик по точке на A, затем по точке на B"
+        aria-label="Соединить"
+      >
+        <IcLink />
+      </button>
+
+      <button
+        className={'ibtn' + (overlayVisible ? ' active' : '')}
         onClick={onToggleOverlay}
         disabled={!canOverlay && !overlayVisible}
         title={overlayTitle}
+        aria-label="Наложить правое на левое"
       >
-        {overlayVisible ? 'Скрыть наложение' : 'Наложить правое на левое'}
+        <IcLayers />
       </button>
 
       {overlayVisible && (
-        <label className="alpha-ctl" title="Прозрачность наложения правого изображения">
-          <span>α</span>
-          <input
-            type="range" min="0" max="1" step="0.05"
-            value={overlayAlpha}
-            onChange={(e) => setOverlayAlpha(Number(e.target.value))}
-          />
-        </label>
-      )}
-
-      {overlayVisible && (
-        <label
-          className="alpha-ctl excl-ctl"
-          title={'Не учитывать при наложении N самых деформируемых пар: ' +
-                 `сейчас отброшено ${excludeTop}, зелёных останется ${greenCount}`}
-        >
-          <span className="ctl-note">не учитывать</span>
-          <input
-            type="range" min="0" max={maxExclude} step="1"
-            value={excludeTop}
-            disabled={!excludeReady}
-            onChange={(e) => setExcludeTop(Number(e.target.value))}
-          />
-          <span className="ctl-val">{excludeTop}</span>
-        </label>
+        <div className="ctxbar">
+          <label className="alpha-ctl" title="Прозрачность наложения правого изображения">
+            <span>α</span>
+            <input
+              type="range" min="0" max="1" step="0.05"
+              value={overlayAlpha}
+              onChange={(e) => setOverlayAlpha(Number(e.target.value))}
+            />
+          </label>
+        </div>
       )}
 
       <button
-        className={maskVisible ? 'active' : ''}
+        className={'ibtn' + (maskVisible ? ' active' : '')}
         onClick={onToggleMask}
         disabled={!canMask}
-        title={
-          !canMask
-            ? 'Сначала загрузите правое изображение'
-            : maskBusy
-              ? 'Mask2Former считает маски… (первый запрос может качать веса модели)'
-              : maskError
-                ? `Ошибка: ${maskError}`
-                : maskVisible
-                  ? `Скрыть маски Mask2Former · инстансов: ${maskCount}` +
-                    (maskMs != null ? ` · ${Math.round(maskMs)} мс` : '')
-                  : 'Показать маски Mask2Former поверх правого изображения'
-        }
+        title={maskTitle}
+        aria-label="Маски Mask2Former"
       >
-        {maskBusy ? 'Mask2Former…' : 'Mask2Former'}
+        <IcMask />
       </button>
 
       {maskVisible && (
-        <label className="alpha-ctl" title="Прозрачность масок Mask2Former на правой картинке">
-          <span className="ctl-note">маски</span>
-          <input
-            type="range" min="0" max="1" step="0.05"
-            value={maskAlpha}
-            onChange={(e) => setMaskAlpha(Number(e.target.value))}
-          />
-        </label>
+        <div className="ctxbar">
+          <label className="alpha-ctl" title="Прозрачность масок Mask2Former на правой картинке">
+            <span>маски</span>
+            <input
+              type="range" min="0" max="1" step="0.05"
+              value={maskAlpha}
+              onChange={(e) => setMaskAlpha(Number(e.target.value))}
+            />
+          </label>
+        </div>
       )}
 
-      <div className="savewrap" ref={saveRef}>
+      {/* фильтр точек после масок */}
+      <button
+        className={'ibtn' + (filterOn ? ' active' : '')}
+        onClick={onToggleFilter}
+        disabled={!canFilter}
+        title={filterTitle}
+        aria-label="Фильтр точек"
+      >
+        <IcFilter />
+      </button>
+
+      {filterOn && filterInfo && (
+        <div className="ctxbar">
+          <label
+            className="alpha-ctl"
+            title={filterReady
+              ? 'Оставлять пары с нормированной деформируемостью не ниже порога'
+              : 'Деформируемость ещё не посчитана — работает только фильтр по границам'}
+          >
+            <span className="ctl-note">важность ≥</span>
+            <input
+              type="range" min="0" max="1" step="0.05"
+              value={filterImpThr}
+              disabled={!filterReady}
+              onChange={(e) => setFilterImpThr(Number(e.target.value))}
+            />
+            <span className="ctl-val">{filterImpThr.toFixed(2)}</span>
+          </label>
+          <label className="alpha-ctl" title="Радиус вокруг границы области, px исходного кадра">
+            <span className="ctl-note">граница ±</span>
+            <input
+              type="range" min="0" max="16" step="1"
+              value={filterRadius}
+              onChange={(e) => setFilterRadius(Number(e.target.value))}
+            />
+            <span className="ctl-val">{filterRadius}px</span>
+          </label>
+          <span className="filter-count" title="Пар, оставшихся после фильтра">
+            {filterInfo.keptPairs}/{filterInfo.totalPairs} пар
+          </span>
+        </div>
+      )}
+
+      {/* всё второстепенное — в одном меню */}
+      <div className="menuwrap" ref={moreRef}>
         <button
-          className={saveOpen ? 'active' : ''}
-          onClick={() => setSaveOpen(o => !o)}
-          disabled={!canSave}
-          title={canSave
-            ? 'Сохранить PNG: композит с наложением или только деформированное правое'
-            : 'Сначала рассчитайте наложение'}
+          className={'ibtn' + (moreOpen ? ' active' : '')}
+          onClick={() => setMoreOpen(o => !o)}
+          title="Ещё: JSON, сохранение, линии, сброс вида"
+          aria-label="Ещё"
         >
-          Сохранить изображение <span className="caret">▾</span>
+          <IcMore />
         </button>
 
-        {saveOpen && (
-          <div className="method-menu">
-            <button className="method-item"
-                    onClick={() => { setSaveOpen(false); onSaveImage('composite'); }}>
-              Композит (с наложением)
+        {moreOpen && (
+          <div className="more-menu">
+            <label
+              className="menu-item"
+              title="Загрузить точки и пары из JSON"
+            >
+              Загрузить JSON
+              <input
+                type="file"
+                accept=".json,application/json"
+                hidden
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) { closeMenus(); onJsonFile(f); }
+                  e.target.value = '';
+                }}
+              />
+            </label>
+
+            <button
+              className="menu-item"
+              disabled={busy}
+              onClick={() => { closeMenus(); onSaveJson(); }}
+              title="Сохранить текущие точки и пары в JSON"
+            >
+              Сохранить JSON
             </button>
-            <button className="method-item"
-                    onClick={() => { setSaveOpen(false); onSaveImage('warped'); }}>
-              Только деформированное правое
+
+            <div className="menu-sep" />
+
+            <button
+              className="menu-item"
+              disabled={!canSave}
+              onClick={() => { closeMenus(); onSaveImage('composite'); }}
+              title={canSave ? 'Левое изображение + деформированное правое' : 'Сначала рассчитайте наложение'}
+            >
+              Сохранить композит PNG
+            </button>
+            <button
+              className="menu-item"
+              disabled={!canSave}
+              onClick={() => { closeMenus(); onSaveImage('warped'); }}
+              title={canSave ? 'Только деформированное правое изображение' : 'Сначала рассчитайте наложение'}
+            >
+              Сохранить деформированное PNG
+            </button>
+
+            <div className="menu-sep" />
+
+            <button
+              className={'menu-item' + (showAllLines ? ' on' : '')}
+              onClick={() => { closeMenus(); onToggleAllLines(); }}
+              title="Показать линии между всеми парами точек"
+            >
+              Все линии {showAllLines && <span className="menu-check">✓</span>}
+            </button>
+            <button
+              className="menu-item"
+              onClick={() => { closeMenus(); onReset(); }}
+              title="Сбросить панорамирование и зум"
+            >
+              Сброс вида
             </button>
           </div>
         )}
       </div>
-
-      <button
-        className={showAllLines ? 'active' : ''}
-        onClick={onToggleAllLines}
-        disabled={busy}
-        title="Показать линии между всеми парами точек"
-      >
-        Все линии
-      </button>
-
-      <button onClick={onReset} disabled={busy}>Сброс вида</button>
     </div>
   );
 }

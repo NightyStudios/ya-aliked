@@ -7,23 +7,29 @@ body {
 .app { display: flex; flex-direction: column; height: 100%; }
 
 .toolbar {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  padding: 10px 16px; background: #15181e; border-bottom: 1px solid #232831;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 14px; background: #15181e; border-bottom: 1px solid #232831;
 }
-.title { font-weight: 600; letter-spacing: .3px; margin-right: 8px; }
-.toolbar button, .filebtn {
-  padding: 6px 12px; border: 1px solid #2a3038; background: #1c2027;
-  color: #e6e8eb; border-radius: 6px; cursor: pointer; font-size: 13px;
-}
-.filebtn:hover, .toolbar button:hover:not(:disabled) { background: #232831; }
-.toolbar button.active { background: #2b4a8a; border-color: #3d6bc9; }
-.toolbar button:disabled { opacity: .35; cursor: not-allowed; }
-.toolbar button.generate { border-color: #3d6bc9; background: #1e2f52; }
-.toolbar button.generate:hover:not(:disabled) { background: #2b4a8a; }
+.title { font-weight: 600; letter-spacing: .3px; margin-right: 6px; }
 
-/* --- кнопка генерации с выпадающим списком методов --- */
+/* --- иконки-тумблеры режимов --- */
+.toolbar .ibtn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  width: 34px; height: 34px; padding: 0;
+  border: 1px solid #2a3038; background: #1c2027; color: #9aa4b2;
+  border-radius: 8px; cursor: pointer;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.toolbar .ibtn:hover:not(:disabled) { background: #232831; color: #e6e8eb; }
+.toolbar .ibtn.active { background: #2b4a8a; border-color: #3d6bc9; color: #fff; }
+.toolbar .ibtn:disabled { opacity: .35; cursor: not-allowed; }
+
+/* --- кнопка генерации: иконка + чип метода --- */
 .genwrap { position: relative; }
-.genwrap .generate { display: inline-flex; align-items: center; gap: 7px; }
+.ibtn.gen { width: auto; padding: 0 10px; border-color: #3d6bc9; background: #1e2f52; color: #e6e8eb; }
+.ibtn.gen:hover:not(:disabled) { background: #2b4a8a; }
+.ibtn.gen.busy svg { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .gen-method {
   color: #8fa9dc; font-size: 11px; font-weight: 600;
   padding: 1px 7px; border-radius: 9px; background: rgba(61,107,201,.25);
@@ -217,26 +223,49 @@ body {
 }
 .matchrow-dist.impval { color: #c3c9d4; font-variant-numeric: tabular-nums; }
 
-/* --- сохранение изображения и слайдер прозрачности наложения --- */
-.savewrap { position: relative; }
-.savewrap .method-menu { left: 0; right: auto; min-width: 250px; }
-.savewrap .caret { font-size: 10px; color: #8fa9dc; }
-
+/* --- контекстные слайдеры активного режима --- */
+.ctxbar { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .alpha-ctl {
   display: inline-flex; align-items: center; gap: 7px;
   padding: 4px 10px; border: 1px solid #2a3038; background: #1c2027;
   border-radius: 6px; font-size: 12px; color: #9aa4b2;
 }
 .alpha-ctl input[type='range'] { width: 96px; accent-color: #3d6bc9; cursor: pointer; }
-
-/* ползунок «не учитывать N самых деформируемых пар» рядом с α */
-.excl-ctl .ctl-note { color: #6a7380; font-size: 11px; white-space: nowrap; }
-.excl-ctl input[type='range'] { width: 110px; }
-.excl-ctl .ctl-val {
+.alpha-ctl input[type='range']:disabled { cursor: not-allowed; opacity: .4; }
+.alpha-ctl .ctl-note { color: #6a7380; font-size: 11px; white-space: nowrap; }
+.alpha-ctl .ctl-val {
   min-width: 26px; text-align: right; color: #e6e8eb;
   font-variant-numeric: tabular-nums; font-weight: 600;
 }
-.excl-ctl input[type='range']:disabled { cursor: not-allowed; opacity: .4; }
+.filter-count {
+  padding: 5px 9px; border: 1px solid #2a3038; background: #1c2027;
+  border-radius: 6px; font-size: 11px; font-weight: 600; color: #8fa9dc;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+
+/* --- выпадающее меню «ещё» --- */
+.menuwrap { position: relative; margin-left: auto; }
+.more-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 200;
+  min-width: 250px; padding: 6px;
+  display: flex; flex-direction: column; gap: 2px;
+  background: #15181e; border: 1px solid #2a3038; border-radius: 10px;
+  box-shadow: 0 14px 44px rgba(0,0,0,.6);
+}
+.menu-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; padding: 8px 10px;
+  background: transparent; border: 1px solid transparent; border-radius: 6px;
+  color: #e6e8eb; font-size: 13px; text-align: left; cursor: pointer;
+}
+.menu-item:hover:not(:disabled) { background: #232831; }
+.menu-item:disabled { opacity: .35; cursor: not-allowed; }
+.menu-item.on { color: #8fa9dc; }
+.menu-check { color: #6f9bff; font-weight: 700; }
+.menu-sep { height: 1px; margin: 4px 2px; background: #232831; }
+
+/* строки списков, отсеянные фильтром «границы ∪ важные» */
+.matchrow.dim { opacity: .35; }
 
 /* слой наложения правого изображения — внутри .stage левой картинки */
 .overlay-layer {

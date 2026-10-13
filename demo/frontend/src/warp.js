@@ -7,32 +7,13 @@ import { fitAffine } from './importance';
 
 export const GREEN_MAX_NORM = 0.5;
 
-// Индексы matches с наибольшей деформируемостью, которые нужно не учитывать
-// при наложении (связи — по индексу пары, для равных значений — меньший индекс).
-export function excludedPairSet(matches, importance, excludeN = 0) {
-  const n = Math.max(0, Math.floor(excludeN || 0));
-  if (!n || !importance || importance.values.length !== matches.length) return null;
-
-  const order = [];
-  for (let i = 0; i < matches.length; i++) {
-    if (Number.isFinite(importance.values[i])) order.push(i);
-  }
-  if (order.length > n) {
-    order.sort((a, b) => importance.values[b] - importance.values[a] || a - b);
-    return new Set(order.slice(0, n));
-  }
-  return new Set(order);                 // исключаем всё — фильтр «зелёных» отсечёт остальное
-}
-
-// Пары с конечной деформируемостью и norm ≤ 0.5, не попавшие в excludeN.
+// Пары с конечной деформируемостью и norm ≤ 0.5.
 // null — если деформируемость не готова или зелёных пар меньше 3
 // (не из чего собрать треугольник).
-export function selectGreenPairs(matches, kpsA, kpsB, importance, excludeN = 0) {
+export function selectGreenPairs(matches, kpsA, kpsB, importance) {
   if (!importance || importance.values.length !== matches.length) return null;
-  const skip = excludedPairSet(matches, importance, excludeN);
   const left = [], right = [];
   matches.forEach((m, i) => {
-    if (skip && skip.has(i)) return;
     const v = importance.values[i];
     const n = importance.norms[i];
     if (!Number.isFinite(v) || !Number.isFinite(n) || n > GREEN_MAX_NORM) return;
@@ -45,12 +26,10 @@ export function selectGreenPairs(matches, kpsA, kpsB, importance, excludeN = 0) 
 }
 
 // Сколько пар проходит фильтр «зелёных» (для тултипов/кнопок).
-export function greenPairCount(matches, importance, excludeN = 0) {
+export function greenPairCount(matches, importance) {
   if (!importance || importance.values.length !== matches.length) return 0;
-  const skip = excludedPairSet(matches, importance, excludeN);
   let k = 0;
   for (let i = 0; i < matches.length; i++) {
-    if (skip && skip.has(i)) continue;
     const v = importance.values[i], n = importance.norms[i];
     if (Number.isFinite(v) && Number.isFinite(n) && n <= GREEN_MAX_NORM) k++;
   }
