@@ -3,6 +3,14 @@ services:
     build: .
     ports:
       - "8000:8000"
+    environment:
+      # веса Mask2Former (~190 МБ) качаются один раз и живут в томе hf_cache
+      - M2F_MODEL_ID=${M2F_MODEL_ID:-facebook/mask2former-swin-tiny-coco-instance}
+      - HF_HOME=/root/.cache/huggingface
     volumes:
       - .:/app
+      - hf_cache:/root/.cache/huggingface
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  hf_cache:

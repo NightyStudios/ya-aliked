@@ -1,34 +1,59 @@
 import {
   HIT_RADIUS, POINT_RADIUS, POINT_RADIUS_HOVER, HALO_RADIUS,
-  DIM_OPACITY, COLOR_UNMATCHED, COLOR_LINE, pairColor,
+  DIM_OPACITY, COLOR_UNMATCHED, COLOR_LINE, pairColor, importanceColor,
 } from '../constants';
 
 export function KeypointOverlay({
-  side, kps, tf, colorMap, pairNo,
+  side, kps, tf, colorMap, pairNo, normMap,
   hovered, setHovered, selected, isActive,
-  connectFrom, onPointClick, onStartDrag,
+  connectFrom, onPointClick, onStartDrag, dragging,
 }) {
   const stop = (e) => e.stopPropagation();
+
+  const dragIdx = dragging && dragging.side === side ? dragging.idx : null;
+  const isDragged = (i) => dragIdx === i;
+
+  // перетаскиваемая точка рисуется последней — не уходит под соседей
+  let order = kps.map((_, i) => i);
+  if (dragIdx != null && dragIdx < order.length) {
+    order = [...order.filter(i => i !== dragIdx), dragIdx];
+  }
+
+  // во время перетаскивания ховер соседних точек игнорируется
+  const enter = (i) => () => {
+    if (dragging) return;
+    setHovered({ side, idx: i });
+  };
+  const leave = (i) => () => {
+    if (dragging) return;
+    setHovered(h => (h && h.side === side && h.idx === i) ? null : h);
+  };
 
   return (
     <svg width="100%" height="100%"
          style={{ position: 'absolute', top: 0, left: 0, overflow: 'visible' }}>
-      {kps.map((kp, i) => {
+      {order.map((i) => {
+        const kp = kps[i];
+        if (!kp) return null;
         const active = isActive(side, i);
         const mIdx   = colorMap.get(i);
-        const color  = mIdx != null ? pairColor(mIdx) : COLOR_UNMATCHED;
+        // цвет по деформируемости — только правая картинка (левая — эталон)
+        const norm   = normMap && mIdx != null ? normMap.get(i) : undefined;
+        const color  = mIdx != null
+          ? (norm !== undefined ? importanceColor(norm) : pairColor(mIdx))
+          : COLOR_UNMATCHED;
 
-        const isHovered  = hovered  && hovered.side  === side && hovered.idx  === i;
+        const isHovered  = !dragging && hovered && hovered.side === side && hovered.idx === i;
         const isSelected = selected && selected.side === side && selected.idx === i;
         const isPending  = connectFrom && connectFrom.side === side && connectFrom.idx === i;
+        const highlight  = isHovered || isSelected || isPending || isDragged(i);
 
-        const r = (isHovered || isSelected || isPending
-          ? POINT_RADIUS_HOVER : POINT_RADIUS) / tf.s;
+        const r = (highlight ? POINT_RADIUS_HOVER : POINT_RADIUS) / tf.s;
         const no = pairNo ? pairNo.get(i) : undefined;
 
         return (
           <g key={i} opacity={active ? 1 : DIM_OPACITY}>
-            {(isHovered || isSelected || isPending) && (
+            {highlight && (
               <circle cx={kp.x} cy={kp.y} r={HALO_RADIUS / tf.s}
                       fill="none"
                       stroke={isPending ? COLOR_LINE : color}
@@ -36,8 +61,8 @@ export function KeypointOverlay({
             )}
             <circle cx={kp.x} cy={kp.y} r={r}
                     fill={isPending ? COLOR_LINE : color}
-                    stroke={isSelected ? '#fff' : 'rgba(0,0,0,.55)'}
-                    strokeWidth={(isSelected ? 1.5 : 0.5) / tf.s} />
+                    stroke={isSelected || isDragged(i) ? '#fff' : 'rgba(0,0,0,.55)'}
+                    strokeWidth={(isSelected || isDragged(i) ? 1.5 : 0.5) / tf.s} />
 
             {no != null && (
               <text x={kp.x + (POINT_RADIUS_HOVER + 4) / tf.s}
@@ -59,9 +84,8 @@ export function KeypointOverlay({
             <circle cx={kp.x} cy={kp.y} r={HIT_RADIUS / tf.s}
                     fill="transparent"
                     style={{ pointerEvents: 'all', cursor: 'pointer' }}
-                    onMouseEnter={() => setHovered({ side, idx: i })}
-                    onMouseLeave={() =>
-                      setHovered(h => (h && h.side === side && h.idx === i) ? null : h)}
+                    onMouseEnter={enter(i)}
+                    onMouseLeave={leave(i)}
                     onMouseDown={(e) => {
                       e.stopPropagation();
                       onStartDrag(side, i, e);

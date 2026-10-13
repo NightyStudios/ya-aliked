@@ -11,3 +11,9 @@ export const COLOR_LINE      = '#ffd166';
 export const GOLDEN_ANGLE    = 137.508;
 
 export const pairColor = (i) => `hsl(${(i * GOLDEN_ANGLE) % 360}, 85%, 62%)`;
+
+// Деформируемость: зелёная (стабильная) → красная (деформируемая). norm ∈ [0, 1].
+export const importanceColor = (norm) => {
+  const n = Math.max(0, Math.min(1, norm || 0));
+  return `hsl(${(120 * (1 - n)).toFixed(1)}, 85%, 55%)`;
+};

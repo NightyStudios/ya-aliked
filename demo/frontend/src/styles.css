@@ -18,12 +18,45 @@ body {
 .filebtn:hover, .toolbar button:hover:not(:disabled) { background: #232831; }
 .toolbar button.active { background: #2b4a8a; border-color: #3d6bc9; }
 .toolbar button:disabled { opacity: .35; cursor: not-allowed; }
-.methods { display: flex; gap: 4px; }
-.status { margin-left: auto; font-size: 12px; color: #9aa4b2; }
+.toolbar button.generate { border-color: #3d6bc9; background: #1e2f52; }
+.toolbar button.generate:hover:not(:disabled) { background: #2b4a8a; }
+
+/* --- кнопка генерации с выпадающим списком методов --- */
+.genwrap { position: relative; }
+.genwrap .generate { display: inline-flex; align-items: center; gap: 7px; }
+.gen-method {
+  color: #8fa9dc; font-size: 11px; font-weight: 600;
+  padding: 1px 7px; border-radius: 9px; background: rgba(61,107,201,.25);
+}
+.genwrap .caret { font-size: 10px; color: #8fa9dc; }
+.method-menu {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 200;
+  min-width: 230px; padding: 6px;
+  background: #15181e; border: 1px solid #2a3038; border-radius: 10px;
+  box-shadow: 0 14px 44px rgba(0,0,0,.6);
+}
+.method-menu-group + .method-menu-group {
+  margin-top: 6px; padding-top: 6px; border-top: 1px solid #232831;
+}
+.method-menu .group-label { display: block; margin: 0 0 4px 4px; }
+.method-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; padding: 7px 10px; margin-bottom: 2px;
+  background: #1c2027; border: 1px solid #2a3038; border-radius: 6px;
+  color: #e6e8eb; font-size: 13px; text-align: left; cursor: pointer;
+}
+.method-item:hover { background: #232831; border-color: #3d6bc9; }
+.method-item.active { background: #2b4a8a; border-color: #3d6bc9; }
+.method-current { font-size: 10px; color: #8fa9dc; text-transform: uppercase; letter-spacing: .4px; }
 
 .panels {
-  flex: 1; display: grid; grid-template-columns: 1fr 1fr 320px;
-  gap: 1px; background: #232831; min-height: 0;
+  flex: 1; display: flex; gap: 1px; background: #232831; min-height: 0;
+  position: relative;
+}
+.panels-main {
+  flex: 1 1 auto; min-width: 0; position: relative;
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 1px; background: #232831;
 }
 .panel {
   position: relative; overflow: hidden; background: #0b0d10;
@@ -37,20 +70,21 @@ body {
 }
 .panel.empty .hint { font-size: 12px; color: #4a5262; }
 .panel.empty.over { border-color: #3d6bc9; color: #8fa9dc; }
+.panel.over { box-shadow: inset 0 0 0 2px #3d6bc9; }
+.drop-hint {
+  position: absolute; inset: 0; z-index: 5;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(15, 24, 48, .55); color: #8fa9dc;
+  font-size: 14px; font-weight: 600; pointer-events: none;
+}
 
 .stage { position: absolute; top: 0; left: 0; will-change: transform; }
+/* линии живут внутри .panels-main — поверх картинок, но не поверх сайдбаров/тулбара */
 .lines {
-  position: fixed; inset: 0; width: 100%; height: 100%;
+  position: absolute; inset: 0; width: 100%; height: 100%;
   pointer-events: none; z-index: 100;
 }
 
-.methods { display: flex; gap: 0; align-items: center; }
-.method-group {
-  display: flex; gap: 4px; align-items: center;
-  padding: 0 10px;
-}
-.method-group:first-child { padding-left: 0; }
-.method-group:not(:first-child) { border-left: 1px solid #232831; }
 .group-label {
   font-size: 11px; color: #6a7380;
   margin-right: 4px;
@@ -59,22 +93,63 @@ body {
   user-select: none;
 }
 
-/* --- боковой список пар --- */
-.matchlist {
+/* --- сайдбары (докнутые, место занимают у картинок) и закладки --- */
+.sidebar {
+  flex: 0 1 300px; min-width: 180px; margin: 12px 0;
+  position: relative; z-index: 110;
   display: flex; flex-direction: column;
-  background: #15181e; min-width: 0; min-height: 0; overflow: hidden;
+  background: #15181e; border: 1px solid #2a3038; border-radius: 10px;
+  box-shadow: -6px 0 24px rgba(0,0,0,.45);
+  overflow: hidden;
 }
-.matchlist-head {
+.bookmarks {
+  flex: 0 0 auto;
+  position: relative; z-index: 110;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 10px 5px; background: #0f1115;
+}
+.bookmark {
+  writing-mode: vertical-rl; text-orientation: mixed;
+  padding: 14px 7px; border: 1px solid #2a3038; border-right: none;
+  background: #15181e; color: #9aa4b2;
+  border-radius: 8px 0 0 8px; cursor: pointer;
+  font-size: 12px; font-weight: 600; letter-spacing: .5px;
   display: flex; align-items: center; gap: 8px;
-  padding: 9px 12px; border-bottom: 1px solid #232831;
-  font-size: 13px; font-weight: 600;
 }
+.bookmark:hover { background: #1c2027; color: #e6e8eb; }
+.bookmark.open { background: #2b4a8a; border-color: #3d6bc9; color: #fff; }
+.bookmark-count {
+  writing-mode: horizontal-tb;
+  background: rgba(255,255,255,.14); color: inherit;
+  border-radius: 9px; padding: 1px 7px; font-size: 11px;
+}
+
+.pointspopup-head {
+  display: flex; align-items: center; gap: 4px;
+  padding: 7px 8px; border-bottom: 1px solid #232831;
+}
+.pointspopup-head .tab {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border: 1px solid transparent; background: transparent;
+  color: #9aa4b2; border-radius: 6px; cursor: pointer; font-size: 12px;
+}
+.pointspopup-head .tab:hover { background: #1c2027; color: #e6e8eb; }
+.pointspopup-head .tab.active {
+  background: #2b4a8a; border-color: #3d6bc9; color: #fff;
+}
+.popup-close {
+  margin-left: auto; width: 26px; height: 26px;
+  border: none; background: transparent; color: #6a7380;
+  border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+.popup-close:hover { background: #232831; color: #e6e8eb; }
+
+.pointspopup-body { flex: 1; overflow-y: auto; padding: 6px; }
 .matchlist-count {
   background: #232831; color: #9aa4b2;
   border-radius: 10px; padding: 1px 8px;
   font-size: 11px; font-weight: 600;
 }
-.matchlist-body { flex: 1; overflow-y: auto; padding: 6px; }
 .matchlist-empty { color: #5a6472; font-size: 13px; padding: 18px 8px; text-align: center; }
 
 .matchrow {
@@ -104,9 +179,6 @@ body {
 .matchrow-dist { color: #6a7380; font-size: 11px; }
 
 /* --- непарные точки --- */
-.matchlist-divider {
-  height: 1px; background: #232831; margin: 8px 4px;
-}
 .matchlist-sub {
   display: flex; align-items: center; gap: 8px;
   padding: 4px 8px 6px;
@@ -115,3 +187,65 @@ body {
 }
 .matchrow.unp .matchrow-coords { flex-direction: row; align-items: center; }
 .matchrow.unp .coord { font-size: 12px; }
+
+/* --- сайдбар «Деформируемость» --- */
+.sidebar-title {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; color: #e6e8eb;
+}
+.imp-note {
+  padding: 8px 10px; border-bottom: 1px solid #232831;
+  font-size: 11px; line-height: 1.5; color: #9aa4b2;
+}
+.imp-legend {
+  display: flex; align-items: center; gap: 6px;
+  margin-top: 7px; font-size: 10px; text-transform: uppercase;
+  letter-spacing: .5px; color: #6a7380;
+}
+.imp-legend i {
+  flex: 1; height: 6px; border-radius: 3px;
+  background: linear-gradient(90deg, hsl(120, 85%, 55%), hsl(0, 85%, 55%));
+}
+.matchrow.improw .matchrow-coords { gap: 3px; }
+.impbar {
+  display: block; height: 4px; width: 100%;
+  background: #232831; border-radius: 2px; overflow: hidden;
+}
+.impbar i {
+  display: block; height: 100%; border-radius: 2px;
+  background: var(--imp, var(--pair));
+}
+.matchrow-dist.impval { color: #c3c9d4; font-variant-numeric: tabular-nums; }
+
+/* --- сохранение изображения и слайдер прозрачности наложения --- */
+.savewrap { position: relative; }
+.savewrap .method-menu { left: 0; right: auto; min-width: 250px; }
+.savewrap .caret { font-size: 10px; color: #8fa9dc; }
+
+.alpha-ctl {
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 4px 10px; border: 1px solid #2a3038; background: #1c2027;
+  border-radius: 6px; font-size: 12px; color: #9aa4b2;
+}
+.alpha-ctl input[type='range'] { width: 96px; accent-color: #3d6bc9; cursor: pointer; }
+
+/* ползунок «не учитывать N самых деформируемых пар» рядом с α */
+.excl-ctl .ctl-note { color: #6a7380; font-size: 11px; white-space: nowrap; }
+.excl-ctl input[type='range'] { width: 110px; }
+.excl-ctl .ctl-val {
+  min-width: 26px; text-align: right; color: #e6e8eb;
+  font-variant-numeric: tabular-nums; font-weight: 600;
+}
+.excl-ctl input[type='range']:disabled { cursor: not-allowed; opacity: .4; }
+
+/* слой наложения правого изображения — внутри .stage левой картинки */
+.overlay-layer {
+  position: absolute; top: 0; left: 0;
+  display: block; pointer-events: none;
+}
+
+/* слой масок Mask2Former — внутри .stage правой картинки */
+.mask-layer {
+  position: absolute; top: 0; left: 0;
+  display: block; pointer-events: none;
+}

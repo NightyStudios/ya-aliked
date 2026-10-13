@@ -80,6 +80,29 @@ class PipelineResponse(BaseModel):
     matcher: str
 
 
+class SegmentRequest(BaseModel):
+    image: ImagePayload
+    # None — взять M2F_THRESHOLD из окружения (см. app.segment)
+    threshold: float | None = Field(default=None, gt=0.0, le=1.0)
+
+
+class SegmentInstance(BaseModel):
+    label_id: int
+    label: str
+    score: float
+    area: int                      # площадь в пикселях оверлея
+
+
+class SegmentResponse(BaseModel):
+    overlay_png_b64: str           # RGBA-PNG с масками (прозрачность заложена в канал A)
+    instances: List[SegmentInstance]
+    width: int                     # размер оверлея — фронт растянет на исходный кадр
+    height: int
+    model: str
+    threshold: float
+    elapsed_ms: float
+
+
 class DetectorMeta(BaseModel):
     available: bool
     description: str = ""

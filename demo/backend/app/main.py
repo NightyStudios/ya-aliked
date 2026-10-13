@@ -1,4 +1,6 @@
+import threading
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,14 +8,24 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import detectors  # noqa: F401
 from . import matchers   # noqa: F401
 from . import registry
+from . import segment
 from .image_io import decode_image_b64
 from .schemas import (
     DetectRequest, DetectResponse, Detection,
     Match, MethodsResponse, DetectorMeta,
     PipelineRequest, PipelineResponse,
+    SegmentRequest, SegmentResponse, SegmentInstance,
 )
 
-app = FastAPI(title="ALIKE Visualizer API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # подгрузить Mask2Former в фоне, чтобы первый запрос не ждал скачивание весов
+    threading.Thread(target=segment.warmup, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="ALIKE Visualizer API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -93,6 +105,30 @@ def pipeline(req: PipelineRequest):
         elapsed_ms=dt_ms,
         method=req.method,
         matcher=req.matcher,
+    )
+
+
+@app.post("/api/segment", response_model=SegmentResponse)
+def segment_image_endpoint(req: SegmentRequest):
+    try:
+        img = decode_image_b64(req.image.image_b64)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Bad image: {e}")
+
+    try:
+        thr = req.threshold if req.threshold is not None else segment.SCORE_THRESHOLD
+        out = segment.segment_image(img, threshold=thr)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Segmentation failed: {e}")
+
+    return SegmentResponse(
+        overlay_png_b64=out["overlay_png_b64"],
+        instances=[SegmentInstance(**i) for i in out["instances"]],
+        width=out["width"],
+        height=out["height"],
+        model=out["model"],
+        threshold=out["threshold"],
+        elapsed_ms=out["elapsed_ms"],
     )
 
 '''

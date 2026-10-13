@@ -1,28 +1,49 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { KeypointOverlay } from './KeypointOverlay';
+
+const ACCEPT = 'image/*,.ppm,.pgm,.pnm';
 
 export function Panel({
   side, img, kps, tf, panelRef, onWheel, onMouseDown, onPanelClick, onPanelDblClick,
-  hovered, setHovered, selected, colorMap, isActive, onFiles,
-  pairNo, connectFrom, onPointClick, onStartDrag,
+  hovered, setHovered, selected, colorMap, isActive, onFile,
+  pairNo, normMap, connectFrom, onPointClick, onStartDrag,
+  dragging, overlayLayerRef, overlayAlpha,
+  maskLayerRef, maskAlpha, maskVisible,
 }) {
   const [over, setOver] = useState(false);
+  const inputRef = useRef(null);
+
+  const pickFile = () => inputRef.current?.click();
+
+  const handleInput = (e) => {
+    const f = e.target.files?.[0];
+    if (f) onFile(f, side);
+    e.target.value = '';
+  };
 
   const handleDrop = (e) => {
     e.preventDefault(); setOver(false);
-    if (e.dataTransfer.files?.length) onFiles(e.dataTransfer.files);
+    const f = Array.from(e.dataTransfer.files || [])
+      .find(x => x.type.startsWith('image/'));
+    if (f) onFile(f, side);
   };
+
+  const input = (
+    <input ref={inputRef} type="file" accept={ACCEPT} hidden onChange={handleInput} />
+  );
 
   if (!img) {
     return (
       <div ref={panelRef}
            className={'panel empty' + (over ? ' over' : '')}
+           onClick={pickFile}
            onDragOver={(e) => { e.preventDefault(); setOver(true); }}
            onDragLeave={() => setOver(false)}
            onDrop={handleDrop}>
+        {input}
         <div>
-          Перетащите изображение сюда<br />
-          <span className="hint">или используйте «Загрузить 2 изображения»</span>
+          Кликните или перетащите изображение сюда<br />
+          <span className="hint">{side === 'a' ? 'левое' : 'правое'} изображение</span>
         </div>
       </div>
     );
@@ -31,9 +52,13 @@ export function Panel({
   const { url, width, height } = img;
 
   return (
-    <div ref={panelRef} className="panel"
+    <div ref={panelRef} className={'panel' + (over ? ' over' : '')}
          onWheel={onWheel} onMouseDown={onMouseDown}
-         onClick={onPanelClick} onDoubleClick={(e) => onPanelDblClick(side, e)}>
+         onClick={onPanelClick} onDoubleClick={(e) => onPanelDblClick(side, e)}
+         onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+         onDragLeave={() => setOver(false)}
+         onDrop={handleDrop}>
+      {input}
       <div className="stage"
            style={{
              transform: `translate(${tf.tx}px, ${tf.ty}px) scale(${tf.s})`,
@@ -41,15 +66,26 @@ export function Panel({
            }}>
         <img src={url} width={width} height={height} draggable={false}
              style={{ display: 'block', pointerEvents: 'none' }} />
+        {overlayLayerRef && (
+          <canvas ref={overlayLayerRef} className="overlay-layer"
+                  style={{ opacity: overlayAlpha ?? 0.5 }} />
+        )}
+        {maskLayerRef && (
+          <canvas ref={maskLayerRef} className="mask-layer"
+                  style={{ opacity: maskVisible ? (maskAlpha ?? 0.75) : 0 }} />
+        )}
         <KeypointOverlay
           side={side} kps={kps} tf={tf} colorMap={colorMap} pairNo={pairNo}
+          normMap={normMap}
           hovered={hovered} setHovered={setHovered}
           selected={selected} isActive={isActive}
           connectFrom={connectFrom}
           onPointClick={onPointClick}
           onStartDrag={onStartDrag}
+          dragging={dragging}
         />
       </div>
+      {over && <div className="drop-hint">Заменить изображение</div>}
     </div>
   );
 }

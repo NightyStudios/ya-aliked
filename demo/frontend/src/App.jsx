@@ -1,16 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Toolbar } from './components/Toolbar';
 import { Panel } from './components/Panel';
-import { MatchList } from './components/MatchList';
+import { PointsPanel } from './components/PointsPanel';
 import { ConnectionLine } from './components/ConnectionLine';
 import { useOpenCV } from './hooks/useOpenCV';
 import { usePanZoom } from './hooks/usePanZoom';
 import { useMatcher } from './hooks/useMatcher';
 import { loadImage, screenPoint } from './cv/loadImage';
 import { fetchMethods } from './cv/methods';
+import { fetchSegmentation } from './cv/segment';
 import { pairColor } from './constants';
 import { clampKp, removePoint, setPair, unmatchedIdx } from './points';
 import { parsePointsJson, serializePointsJson, downloadJson } from './jsonPoints';
+import {
+  computeImportanceRange, normalize, buildPairArrays,
+  MIN_POINTS_FOR_IMPORTANCE,
+} from './importance';
+import {
+  selectGreenPairs, greenPairCount, warpRightToLeft,
+  compositeOverlay, downloadCanvas,
+} from './warp';
 
 export default function App() {
   const cvReady = useOpenCV();
@@ -21,7 +30,7 @@ export default function App() {
 
   const [methodsMeta, setMethodsMeta] = useState({});
   const [method, setMethod] = useState('orb_cv');
-  const [params, setParams] = useState({});   // новая ссылка = форс-перезапуск детекта
+  const [params] = useState({});   // задел под слайдеры параметров
 
   const [hovered, setHovered] = useState(null);
   const [selected, setSelected] = useState(null);
@@ -29,31 +38,60 @@ export default function App() {
   const [showAllLines, setShowAllLines] = useState(false);
   const [allLines, setAllLines] = useState([]);
 
-  // --- редактируемое состояние точек/пар (переопределяет результат детекта)
+  // --- редактируемое состояние точек/пар
   const [kpsA, setKpsA] = useState([]);
   const [kpsB, setKpsB] = useState([]);
   const [matches, setMatches] = useState([]);
+  // откуда точки: 'det' (детект) | 'json' (загружены из файла) | null
+  const [pointsSource, setPointsSource] = useState(null);
+
+  // --- явный запуск детекта (кнопка «Сгенерировать точки»)
+  const [genTrigger, setGenTrigger] = useState(0);
 
   // --- режим соединения
   const [connectMode, setConnectMode] = useState(false);
   const [connectFrom, setConnectFrom] = useState(null);
 
-  // --- собственный статус (JSON-операции), перекрывает статус детекта
-  const [notice, setNotice] = useState('');
+  // --- правая панель: два независимых сайдбара
+  const [pairsOpen, setPairsOpen] = useState(false);
+  const [impOpen, setImpOpen] = useState(false);
+
+  // --- деформируемость точек (триангуляция Делоне, левое — эталон)
+  const [importance, setImportance] = useState(null);   // {values, norms} по индексам matches
+  const [importanceBusy, setImportanceBusy] = useState(false);
+  const impGenRef = useRef(0);
 
   const panelARef = useRef(null);
   const panelBRef = useRef(null);
+  const panelsMainRef = useRef(null);
 
   const lastJsonLoadAtRef = useRef(0);
-  const pendingJsonRef = useRef(null);
-  // JSON активен: авто-детект (поздний cvReady, смена картинок) его не затирает;
-  // только явный клик по кнопке метода возвращает управление детекту.
-  const jsonSuppressRef = useRef(false);
-  const explicitDetectRef = useRef(false);
   const kpDragRef = useRef(null);
   const kpDragMoved = useRef(false);
   const tfRef = useRef(tf);
   useEffect(() => { tfRef.current = tf; });
+
+  // --- текущее перетаскивание точки {side, idx}: пока тянешь —
+  // ховер соседних точек игнорируется, а перетаскиваемая рисуется сверху
+  const [dragging, setDragging] = useState(null);
+
+  // --- наложение правого изображения на левое (по зелёным парам)
+  const [overlayVisible, setOverlayVisible] = useState(false);
+  const [overlayAlpha, setOverlayAlpha] = useState(0.5);
+  const [overlay, setOverlay] = useState(null);        // { warped, green, total }
+  // сколько самых деформируемых пар не учитывать при наложении (ползунок)
+  const [excludeTop, setExcludeTop] = useState(0);
+  const overlayLayerRef = useRef(null);
+  const overlayGenRef = useRef(0);
+
+  // --- маски Mask2Former поверх правой картинки
+  const [maskVisible, setMaskVisible] = useState(false);
+  const [maskBusy, setMaskBusy] = useState(false);
+  const [maskError, setMaskError] = useState(null);
+  const [maskAlpha, setMaskAlpha] = useState(0.75);
+  const [maskData, setMaskData] = useState(null);   // { imgB, el, instances, elapsedMs }
+  const maskLayerRef = useRef(null);
+  const maskGenRef = useRef(0);
 
   // --- метаданные методов с бэка
   useEffect(() => {
@@ -73,35 +111,191 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // --- пайплайн
-  const det = useMatcher({ cvReady, imgA, imgB, method, params });
-  const { status, busy } = det;
+  // --- пайплайн (запускается только кнопкой генерации)
+  const det = useMatcher({ cvReady, imgA, imgB, method, params, trigger: genTrigger });
+  const { busy } = det;
 
-  // --- применение результата детекта (не затирает свежий JSON)
+  // --- применение результата детекта
   useEffect(() => {
-    const explicit = explicitDetectRef.current;
-    explicitDetectRef.current = false;
     if (!det.runId) return;
-
-    if (pendingJsonRef.current) {
-      const p = pendingJsonRef.current;
-      pendingJsonRef.current = null;
-      applyParsed(p, 'JSON загружен: ');
+    if (det.startedAt <= lastJsonLoadAtRef.current) return;   // JSON загружен во время детекта
+    if (det.runImgA !== imgA || det.runImgB !== imgB) {       // картинки сменили за время детекта
+      console.warn('Изображения изменились — результат детекта не применён');
       return;
     }
-
-    if (det.startedAt <= lastJsonLoadAtRef.current) return;   // JSON новее детекта
-    if (!explicit && jsonSuppressRef.current) return;         // JSON активен, авто-запуск
-
-    jsonSuppressRef.current = false;
     setKpsA(det.kpsA);
     setKpsB(det.kpsB);
     setMatches(det.matches);
+    setPointsSource('det');
     setSelected(null);
     setConnectFrom(null);
-    setNotice('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [det.runId]);
+
+  const handleGenerate = useCallback(() => setGenTrigger(t => t + 1), []);
+
+  // --- расчёт деформируемости: дебаунс 300мс + чанками, чтобы не блокировать UI.
+  // Стейт понимает только по длине: пока matches не изменился — старые значения
+  // остаются валидными (правки координат делают их лишь слегка устаревшими).
+  useEffect(() => {
+    const gen = ++impGenRef.current;
+    const pairs = matches.length >= MIN_POINTS_FOR_IMPORTANCE
+      ? buildPairArrays(matches, kpsA, kpsB, imgA)
+      : null;
+    if (!pairs) {
+      setImportance(null);
+      setImportanceBusy(false);
+      return;
+    }
+    setImportanceBusy(true);
+    const timer = setTimeout(async () => {
+      const { left, right, corners } = pairs;
+      const M = left.length;
+      const values = new Float64Array(M);
+      const CH = 20;
+      for (let s = 0; s < M; s += CH) {
+        if (impGenRef.current !== gen) return;          // устарело — новая правка
+        computeImportanceRange(left, right, corners, s, Math.min(M, s + CH), values);
+        await new Promise(r => setTimeout(r, 0));       // отдых главному потоку
+      }
+      if (impGenRef.current !== gen) return;
+      setImportance({ values, norms: normalize(values) });
+      setImportanceBusy(false);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [matches, kpsA, kpsB, imgA]);
+
+  // значение деформируемости согласовано с текущими matches
+  const impReady = !!(importance && importance.values.length === matches.length);
+
+  // предел ползунка: минимум одна пара должна остаться
+  const maxExclude = Math.max(0, matches.length - 1);
+  // фактическое исключение — внутри допустимого диапазона
+  const excludeN = Math.min(Math.max(0, Math.floor(excludeTop)), maxExclude);
+
+  // --- наложение: доступные «зелёные» пары (деформируемость ≤ GREEN_MAX_NORM)
+  const greenCount = useMemo(
+    () => greenPairCount(matches, impReady ? importance : null, excludeN),
+    [matches, impReady, importance, excludeN],
+  );
+  const canOverlay = !!(imgA && imgB && greenCount >= 3);
+
+  // --- расчёт warp (дебаунс 300мс), пока наложение видимо;
+  // скрыли наложение — устаревший результат не храним.
+  useEffect(() => {
+    if (!overlayVisible || !imgA || !imgB) {
+      setOverlay(null);
+      return;
+    }
+    const gen = ++overlayGenRef.current;
+    const pairs = selectGreenPairs(matches, kpsA, kpsB, impReady ? importance : null, excludeN);
+    if (!pairs) {
+      setOverlay({ warped: null, green: 0, total: matches.length });
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (overlayGenRef.current !== gen) return;
+      const warped = warpRightToLeft(imgA, imgB, pairs.left, pairs.right);
+      if (overlayGenRef.current !== gen) return;
+      setOverlay({ warped, green: pairs.left.length, total: matches.length });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [overlayVisible, imgA, imgB, kpsA, kpsB, matches, impReady, importance, excludeN]);
+
+  // --- отрисовка слоя наложения в левой панели
+  const overlayWarped = overlay ? overlay.warped : null;
+  useEffect(() => {
+    const c = overlayLayerRef.current;
+    if (!c) return;
+    if (!overlayWarped) { c.width = 0; c.height = 0; return; }
+    c.width = overlayWarped.width;
+    c.height = overlayWarped.height;
+    const ctx = c.getContext('2d');
+    if (ctx) ctx.drawImage(overlayWarped, 0, 0);
+  }, [overlayWarped]);
+
+  const toggleOverlay = useCallback(() => setOverlayVisible(v => !v), []);
+
+  // --- Mask2Former: смена правой картинки обесценивает результат
+  useEffect(() => {
+    maskGenRef.current++;                 // отменить запрос в полёте
+    setMaskData(null);
+    setMaskError(null);
+    setMaskBusy(false);
+  }, [imgB]);
+
+  const runMask = useCallback(async () => {
+    if (!imgB) return;
+    const gen = ++maskGenRef.current;
+    setMaskBusy(true);
+    setMaskError(null);
+    try {
+      const res = await fetchSegmentation(imgB);
+      if (maskGenRef.current !== gen) return;
+      setMaskData({ imgB, ...res });
+      console.info(`Mask2Former: ${res.instances.length} инстансов за ${Math.round(res.elapsedMs)} мс`);
+    } catch (e) {
+      if (maskGenRef.current !== gen) return;
+      console.error('Mask2Former:', e);
+      setMaskError(String(e?.message || e));
+    } finally {
+      if (maskGenRef.current === gen) setMaskBusy(false);
+    }
+  }, [imgB]);
+
+  const toggleMask = useCallback(() => {
+    if (maskVisible) {
+      setMaskVisible(false);
+      setMaskError(null);                 // выключение сбрасывает ошибку — включение повторит запрос
+      return;
+    }
+    setMaskVisible(true);
+  }, [maskVisible]);
+
+  // включили маски (или сменили картинку) — запустить расчёт, если результата нет
+  useEffect(() => {
+    if (maskVisible && imgB && !maskData && !maskBusy && !maskError) runMask();
+  }, [maskVisible, imgB, maskData, maskBusy, maskError, runMask]);
+
+  // отрисовка слоя масок в правой панели (растягиваем на исходный кадр)
+  const maskEl = maskData && maskData.imgB === imgB ? maskData.el : null;
+  useEffect(() => {
+    const c = maskLayerRef.current;
+    if (!c) return;
+    if (!maskEl || !imgB || !maskVisible) { c.width = 0; c.height = 0; return; }
+    c.width = imgB.width;
+    c.height = imgB.height;
+    const ctx = c.getContext('2d');
+    if (ctx) ctx.drawImage(maskEl, 0, 0, c.width, c.height);
+  }, [maskEl, imgB, maskVisible]);
+
+  const maskCount = maskData ? maskData.instances.length : 0;
+
+  const canSave = !!(overlay && overlay.warped && imgA);
+
+  const handleSaveImage = useCallback((kind) => {
+    if (!overlay || !overlay.warped || !imgA) {
+      console.warn('Нет рассчитанного наложения — сначала «Наложить правое на левое»');
+      return;
+    }
+    const base = (imgA.name || 'overlay').replace(/\.[^.]+$/, '') || 'overlay';
+    if (kind === 'warped') {
+      downloadCanvas(overlay.warped, `${base}_warped.png`);
+      console.info(`Сохранено деформированное правое: ${overlay.green} зелёных пар`);
+    } else {
+      downloadCanvas(compositeOverlay(imgA, overlay.warped, overlayAlpha), `${base}_overlay.png`);
+      console.info(`Сохранён композит: ${overlay.green} зелёных пар, α=${overlayAlpha}`);
+    }
+  }, [overlay, imgA, overlayAlpha]);
+
+  // --- нормировка для цвета деформируемости точек правой картинки
+  const bNormMap = useMemo(() => {
+    const map = new Map();
+    if (impReady) {
+      matches.forEach((m, i) => map.set(m.bIdx, importance.norms[i] ?? 0));
+    }
+    return map;
+  }, [impReady, importance, matches]);
 
   // --- idx -> match idx, для раскраски пар
   const matchColorIdx = useMemo(() => {
@@ -122,23 +316,41 @@ export default function App() {
   }, [matches]);
 
   const isActive = useCallback((side, idx) => {
+    if (dragging) return true;                 // во время перетаскивания ничего не гасим
     if (!hovered) return true;
     if (hovered.side === side && hovered.idx === idx) return true;
     const m = findMatch(hovered.side, hovered.idx);
     if (!m) return false;
     const otherIdx = hovered.side === 'a' ? m.bIdx : m.aIdx;
     return side !== hovered.side && idx === otherIdx;
-  }, [hovered, findMatch]);
+  }, [hovered, findMatch, dragging]);
 
-  // --- авто-фит при загрузке
-  useEffect(() => {
+  // --- подгонка вида под текущие размеры панелей
+  const fitView = useCallback(() => {
     if (!imgA || !imgB) return;
     const pa = panelARef.current, pb = panelBRef.current;
     if (!pa || !pb) return;
     const s = Math.min(pa.clientWidth / imgA.width, pb.clientWidth / imgB.width) * 0.92;
     setTf({ s, tx: 10, ty: 10 });
-    setSelected(null);
   }, [imgA, imgB, setTf]);
+
+  // --- авто-фит при загрузке
+  useEffect(() => {
+    if (!imgA || !imgB) return;
+    fitView();
+    setSelected(null);
+  }, [imgA, imgB, fitView]);
+
+  // --- рефит при открытии/закрытии сайдбаров: картинки не должны обрезаться
+  useEffect(() => { fitView(); }, [pairsOpen, impOpen, fitView]);
+
+  // --- координаты относительно .panels-main: линии рисуются только внутри картинок
+  const toMain = useCallback((p) => {
+    const pm = panelsMainRef.current;
+    if (!pm) return p;
+    const r = pm.getBoundingClientRect();
+    return { x: p.x - r.left, y: p.y - r.top };
+  }, []);
 
   // --- линия между выбранной точкой и её парой
   useEffect(() => {
@@ -151,14 +363,14 @@ export default function App() {
       if (!pa || !pb) return;
       const ka = kpsA[m.aIdx], kb = kpsB[m.bIdx];
       if (!ka || !kb) return;
-      const p1 = screenPoint(pa, tf, ka);
-      const p2 = screenPoint(pb, tf, kb);
+      const p1 = toMain(screenPoint(pa, tf, ka));
+      const p2 = toMain(screenPoint(pb, tf, kb));
       setLine({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y });
     };
     update();
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
-  }, [selected, tf, matches, kpsA, kpsB, findMatch]);
+  }, [selected, tf, matches, kpsA, kpsB, findMatch, toMain, pairsOpen, impOpen]);
 
   const consumePointDrag = () => {
     if (kpDragMoved.current) { kpDragMoved.current = false; return true; }
@@ -179,6 +391,7 @@ export default function App() {
     if (!img || !kp) return;
     kpDragMoved.current = false;
     kpDragRef.current = { side, idx, img, kp, x: e.clientX, y: e.clientY, moved: false };
+    setDragging({ side, idx });
   }, [imgA, imgB, kpsA, kpsB]);
 
   useEffect(() => {
@@ -197,6 +410,7 @@ export default function App() {
       if (!kpDragRef.current) return;
       kpDragMoved.current = kpDragRef.current.moved;
       kpDragRef.current = null;
+      setDragging(null);
     };
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', onUp);
@@ -254,10 +468,15 @@ export default function App() {
     setConnectFrom(null);
   }, [imgA, imgB, kpsA, kpsB, wasDrag]);
 
-  // --- Delete/Backspace — удалить выбранную точку; Escape — отмена пары
+  // --- Delete/Backspace — удалить выбранную точку; Escape — отмена пары / закрыть панель
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key === 'Escape') { setConnectFrom(null); return; }
+      if (e.key === 'Escape') {
+        setConnectFrom(null);
+        setPairsOpen(false);
+        setImpOpen(false);
+        return;
+      }
       if (e.key !== 'Delete' && e.key !== 'Backspace') return;
       if (!selected) return;
       e.preventDefault();
@@ -287,8 +506,8 @@ export default function App() {
       matches.forEach((m, i) => {
         const ka = kpsA[m.aIdx], kb = kpsB[m.bIdx];
         if (!ka || !kb) return;
-        const p1 = screenPoint(pa, tf, ka);
-        const p2 = screenPoint(pb, tf, kb);
+        const p1 = toMain(screenPoint(pa, tf, ka));
+        const p2 = toMain(screenPoint(pb, tf, kb));
         out.push({ x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, color: pairColor(i) });
       });
       setAllLines(out);
@@ -296,60 +515,54 @@ export default function App() {
     update();
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
-  }, [showAllLines, tf, matches, kpsA, kpsB]);
+  }, [showAllLines, tf, matches, kpsA, kpsB, toMain, pairsOpen, impOpen]);
 
-  const handleFiles = useCallback(async (files) => {
-    const arr = Array.from(files).filter(f => f.type.startsWith('image/')).slice(0, 2);
-    if (!arr.length) return;
-    const imgs = await Promise.all(arr.map(loadImage));
-    // новый контекст изображений — JSON-точки (от старых картинок) больше не авторитетны
-    jsonSuppressRef.current = false;
-    if (imgs[0]) setImgA(imgs[0]);
-    if (imgs[1]) setImgB(imgs[1]);
-  }, []);
+  // --- загрузка одной картинки в конкретную рамку
+  const handleFile = useCallback(async (file, side) => {
+    if (!file) return;
+    let img;
+    try { img = await loadImage(file); }
+    catch (e) { console.error('Не удалось открыть изображение:', e); return; }
 
-  // клик по кнопке метода = явное «пере-детектировать» (форс-перезапуск через params)
-  const handleMethodChange = useCallback((m) => {
-    explicitDetectRef.current = true;
-    setMethod(m);
-    setParams({});
-  }, []);
+    // точки детекта относились к прежним картинкам — убрать; JSON остаётся
+    if (pointsSource === 'det') {
+      setKpsA([]); setKpsB([]); setMatches([]);
+      setPointsSource(null);
+      setSelected(null);
+      setConnectFrom(null);
+    }
+    if (side === 'a') setImgA(img);
+    else setImgB(img);
+  }, [pointsSource]);
 
   // --- JSON: применить распарсенные точки
   const applyParsed = useCallback((p, prefix = '') => {
     let warn = '';
     if (imgA && p.imageA && imgA.name !== p.imageA) warn += ` · A: «${p.imageA}» ≠ «${imgA.name}»`;
     if (imgB && p.imageB && imgB.name !== p.imageB) warn += ` · B: «${p.imageB}» ≠ «${imgB.name}»`;
+    if (warn) console.warn('Загруженный JSON:' + warn);
 
     setKpsA(p.kpsA);
     setKpsB(p.kpsB);
     setMatches(p.matches);
+    setPointsSource('json');
     setSelected(null);
     setConnectFrom(null);
     lastJsonLoadAtRef.current = Date.now();
-    jsonSuppressRef.current = true;
-    setNotice(`${prefix}${p.counts.pairs} пар · ${p.counts.ua}/${p.counts.ub} непарных${warn}`);
+    console.info(`${prefix}${p.counts.pairs} пар · ${p.counts.ua}/${p.counts.ub} непарных`);
   }, [imgA, imgB]);
 
   const handleJsonFile = useCallback(async (file) => {
     try {
       const text = await file.text();
-      const parsed = parsePointsJson(text);
-      if (imgA && imgB) {
-        pendingJsonRef.current = null;
-        applyParsed(parsed);
-      } else {
-        // изображений ещё нет — применим, когда придёт результат детекта
-        pendingJsonRef.current = parsed;
-        setNotice('JSON принят — загрузите обе картинки, чтобы увидеть точки');
-      }
+      applyParsed(parsePointsJson(text));
     } catch (e) {
-      setNotice('Ошибка JSON: ' + e.message);
+      console.error('Ошибка JSON:', e);
     }
-  }, [imgA, imgB, applyParsed]);
+  }, [applyParsed]);
 
   const handleSaveJson = useCallback(() => {
-    if (!kpsA.length && !kpsB.length) { setNotice('Нет точек для сохранения'); return; }
+    if (!kpsA.length && !kpsB.length) { console.warn('Нет точек для сохранения'); return; }
     const text = serializePointsJson({
       kpsA, kpsB, matches,
       imageA: imgA ? imgA.name : null,
@@ -359,7 +572,7 @@ export default function App() {
     downloadJson(text, `${base}_points.json`);
     const ua = unmatchedIdx(kpsA, matches, 'a').length;
     const ub = unmatchedIdx(kpsB, matches, 'b').length;
-    setNotice(`Сохранено: ${matches.length} пар · ${ua}/${ub} непарных`);
+    console.info(`Сохранено: ${matches.length} пар · ${ua}/${ub} непарных`);
   }, [kpsA, kpsB, matches, imgA, imgB]);
 
   const toggleConnect = useCallback(() => {
@@ -367,16 +580,15 @@ export default function App() {
     setConnectFrom(null);
   }, []);
 
+  const canGenerate = !!(cvReady && imgA && imgB);
+
   return (
     <div className="app">
       <Toolbar
         method={method}
-        setMethod={handleMethodChange}
+        setMethod={setMethod}
         methodsMeta={methodsMeta}
         onReset={reset}
-        onFiles={handleFiles}
-        status={notice || status}
-        cvReady={cvReady}
         busy={busy}
         showAllLines={showAllLines}
         onToggleAllLines={() => setShowAllLines(v => !v)}
@@ -384,44 +596,81 @@ export default function App() {
         onSaveJson={handleSaveJson}
         connectMode={connectMode}
         onToggleConnect={toggleConnect}
+        onGenerate={handleGenerate}
+        canGenerate={canGenerate}
+        canOverlay={canOverlay}
+        overlayVisible={overlayVisible}
+        onToggleOverlay={toggleOverlay}
+        overlayAlpha={overlayAlpha}
+        setOverlayAlpha={setOverlayAlpha}
+        excludeTop={excludeN}
+        setExcludeTop={setExcludeTop}
+        maxExclude={maxExclude}
+        excludeReady={impReady}
+        greenCount={greenCount}
+        pairCount={matches.length}
+        onSaveImage={handleSaveImage}
+        canSave={canSave}
+        maskVisible={maskVisible}
+        onToggleMask={toggleMask}
+        maskBusy={maskBusy}
+        maskError={maskError}
+        canMask={!!imgB}
+        maskAlpha={maskAlpha}
+        setMaskAlpha={setMaskAlpha}
+        maskCount={maskCount}
+        maskMs={maskData ? maskData.elapsedMs : null}
       />
 
       <div className="panels">
-        <Panel
-          side="a" img={imgA} kps={kpsA} tf={tf} panelRef={panelARef}
-          onWheel={makeWheelHandler(() => panelARef.current)}
-          onMouseDown={onMouseDown} onPanelClick={handlePanelClick}
-          onPanelDblClick={handlePanelDblClick}
-          hovered={hovered} setHovered={setHovered}
-          selected={selected}
-          colorMap={matchColorIdx.a} isActive={isActive} onFiles={handleFiles}
-          pairNo={pairNo.a}
-          connectFrom={connectFrom}
-          onPointClick={handlePointClick}
-          onStartDrag={startPointDrag}
-        />
-        <Panel
-          side="b" img={imgB} kps={kpsB} tf={tf} panelRef={panelBRef}
-          onWheel={makeWheelHandler(() => panelBRef.current)}
-          onMouseDown={onMouseDown} onPanelClick={handlePanelClick}
-          onPanelDblClick={handlePanelDblClick}
-          hovered={hovered} setHovered={setHovered}
-          selected={selected}
-          colorMap={matchColorIdx.b} isActive={isActive} onFiles={handleFiles}
-          pairNo={pairNo.b}
-          connectFrom={connectFrom}
-          onPointClick={handlePointClick}
-          onStartDrag={startPointDrag}
-        />
+        <div className="panels-main" ref={panelsMainRef}>
+          <Panel
+            side="a" img={imgA} kps={kpsA} tf={tf} panelRef={panelARef}
+            onWheel={makeWheelHandler(() => panelARef.current)}
+            onMouseDown={onMouseDown} onPanelClick={handlePanelClick}
+            onPanelDblClick={handlePanelDblClick}
+            hovered={hovered} setHovered={setHovered}
+            selected={selected}
+            colorMap={matchColorIdx.a} isActive={isActive} onFile={handleFile}
+            pairNo={pairNo.a}
+            connectFrom={connectFrom}
+            onPointClick={handlePointClick}
+            onStartDrag={startPointDrag}
+            dragging={dragging}
+            overlayLayerRef={overlayLayerRef}
+            overlayAlpha={overlayAlpha}
+          />
+          <Panel
+            side="b" img={imgB} kps={kpsB} tf={tf} panelRef={panelBRef}
+            onWheel={makeWheelHandler(() => panelBRef.current)}
+            onMouseDown={onMouseDown} onPanelClick={handlePanelClick}
+            onPanelDblClick={handlePanelDblClick}
+            hovered={hovered} setHovered={setHovered}
+            selected={selected}
+            colorMap={matchColorIdx.b} isActive={isActive} onFile={handleFile}
+            pairNo={pairNo.b}
+            normMap={bNormMap}
+            connectFrom={connectFrom}
+            onPointClick={handlePointClick}
+            onStartDrag={startPointDrag}
+            dragging={dragging}
+            maskLayerRef={maskLayerRef}
+            maskAlpha={maskAlpha}
+            maskVisible={maskVisible}
+          />
+          <ConnectionLine lines={allLines} line={line} />
+        </div>
 
-        <MatchList
+        <PointsPanel
+          pairsOpen={pairsOpen} setPairsOpen={setPairsOpen}
+          impOpen={impOpen} setImpOpen={setImpOpen}
           matches={matches} kpsA={kpsA} kpsB={kpsB}
           selected={selected} setSelected={setSelected}
           setHovered={setHovered}
+          importance={impReady ? importance : null}
+          importanceBusy={importanceBusy}
         />
       </div>
-
-      <ConnectionLine lines={allLines} line={line} />
     </div>
   );
 }

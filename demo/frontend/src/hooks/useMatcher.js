@@ -2,26 +2,33 @@ import { useEffect, useRef, useState } from 'react';
 import { DETECTORS } from '../cv/detectors';
 import { matchDescriptors } from '../cv/matchers';
 
-export function useMatcher({ cvReady, imgA, imgB, method, params = {} }) {
+// Детект выполняется ТОЛЬКО по изменению trigger (кнопка «Сгенерировать точки»).
+// trigger === 0 — ни один запуск ещё не делался.
+export function useMatcher({ cvReady, imgA, imgB, method, params = {}, trigger = 0 }) {
   const [state, setState] = useState({
-    kpsA: [], kpsB: [], matches: [], status: '', busy: false,
-    runId: 0, startedAt: 0,
+    kpsA: [], kpsB: [], matches: [], busy: false,
+    runId: 0, startedAt: 0, runImgA: null, runImgB: null,
   });
 
   const detRef = useRef({ a: null, b: null });
   const runIdRef = useRef(0);
 
   useEffect(() => {
-    if (!imgA || !imgB) return;
-    if (!cvReady) return;
+    if (!trigger) return;
+
+    if (!imgA || !imgB || !cvReady) {
+      setState(s => ({ ...s, busy: false }));
+      return;
+    }
 
     const det = DETECTORS[method];
     if (!det) {
-      setState({
-        kpsA: [], kpsB: [], matches: [], busy: false,
+      console.error(`Неизвестный метод: ${method}`);
+      setState(s => ({
+        ...s, busy: false,
         runId: ++runIdRef.current, startedAt: Date.now(),
-        status: `Неизвестный метод: ${method}`,
-      });
+        runImgA: imgA, runImgB: imgB,
+      }));
       return;
     }
 
@@ -30,15 +37,13 @@ export function useMatcher({ cvReady, imgA, imgB, method, params = {} }) {
     const runId = ++runIdRef.current;
 
     (async () => {
-      setState(s => ({ ...s, busy: true, status: 'Detecting…' }));
+      setState(s => ({ ...s, busy: true }));
       try {
         const [a, b] = await Promise.all([
           det.detect(imgA, params),
           det.detect(imgB, params),
         ]);
         if (cancelled) return;
-
-        setState(s => ({ ...s, status: 'Matching…' }));
 
         const ms = await matchDescriptors(a, b, { crossCheck: true });
         if (cancelled) return;
@@ -54,7 +59,7 @@ export function useMatcher({ cvReady, imgA, imgB, method, params = {} }) {
           matches: ms,
           busy: false,
           runId, startedAt,
-          status: `${a.points.length} / ${b.points.length} kp · ${ms.length} matches`,
+          runImgA: imgA, runImgB: imgB,
         });
       } catch (e) {
         console.error(e);
@@ -63,14 +68,17 @@ export function useMatcher({ cvReady, imgA, imgB, method, params = {} }) {
             kpsA: [], kpsB: [], matches: [],
             busy: false,
             runId, startedAt,
-            status: 'Ошибка: ' + e.message,
+            runImgA: imgA, runImgB: imgB,
           });
         }
       }
     })();
 
     return () => { cancelled = true; };
-  }, [cvReady, imgA, imgB, method, params]);
+    // imgA/imgB сознательно не в deps: смена картинок не должна сама запускать детект;
+    // актуальность результата проверяется по runImgA/runImgB в App.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trigger]);
 
   // cleanup при размонтировании
   useEffect(() => () => {
