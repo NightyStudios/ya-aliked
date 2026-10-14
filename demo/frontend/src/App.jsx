@@ -23,6 +23,8 @@ import {
   selectWarpPairs, warpPairCount, warpWithMesh,
   compositeOverlay, downloadCanvas,
 } from './warp';
+import { readSlot, writeSlot } from './snapshots';
+import { removePair, restoreEntries, argminNorms } from './prune';
 
 export default function App() {
   const cvReady = useOpenCV();
@@ -57,6 +59,11 @@ export default function App() {
   // --- режим деформации: клик по точке — исключить её пару из триангуляции
   // (мягкое исключение, флаг ex на точке; пары и JSON не меняются)
   const [deformMode, setDeformMode] = useState(false);
+  // --- режим редактирования: выбранная точка мельчает и тускнеет,
+  // координаты в HUD, движение стрелками ±1px (Shift ±10px)
+  const [editMode, setEditMode] = useState(false);
+  // --- solo: визуально выключены все точки, кроме выбранной пары
+  const [soloMode, setSoloMode] = useState(false);
 
   // --- правая панель: два независимых сайдбара
   const [pairsOpen, setPairsOpen] = useState(false);
@@ -110,13 +117,85 @@ export default function App() {
   const [excludedClasses, setExcludedClasses] = useState([]);
   const [classMargin, setClassMargin] = useState(5);
   const [geometryFilterOn, setGeometryFilterOn] = useState(false);
+  // снапшот параметров при нажатии «Применить»: пока совпадает — панель свёрнута
+  const [appliedFilterParams, setAppliedFilterParams] = useState(null);
 
   // --- проверка с эталоном: метрики сходства начального и наложенного
+  const [refImage, setRefImage] = useState(null);         // { name, dataUrl } — эталон на сессию
   const [checkBusy, setCheckBusy] = useState(false);
   const [checkError, setCheckError] = useState(null);
   const [checkData, setCheckData] = useState(null);   // { refName, ref_size, compared_size, initial, warped, ... }
   const [checkOpen, setCheckOpen] = useState(false);
   const checkGenRef = useRef(0);
+
+  // --- prune: итеративное удаление пар с наименьшей деформируемостью
+  const [pruneTarget, setPruneTarget] = useState(0);   // значение ползунка (сколько удалить)
+  const [pruneStack, setPruneStack] = useState([]);    // записи удалённого (для возврата)
+  const [pruneBusy, setPruneBusy] = useState(false);
+  const [pruneProgress, setPruneProgress] = useState(null); // { i, n }
+  const pruneGenRef = useRef(0);
+
+  // --- снимки точек: initial (база) и actual (Ctrl+S / тихий сейв / автосейв)
+  const [snapshotMeta, setSnapshotMeta] = useState({ initial: null, actual: null });
+  const [autoSave, setAutoSave] = useState(() => {
+    try { return globalThis.localStorage?.getItem('aliked.autosave') === '1'; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    try { globalThis.localStorage?.setItem('aliked.autosave', autoSave ? '1' : '0'); }
+    catch { /* ignore */ }
+  }, [autoSave]);
+
+  // канонический текст текущего состояния — база для dirty-сравнения и записи слотов
+  const currentJsonText = useMemo(() => {
+    if (!kpsA.length && !kpsB.length) return '';
+    return serializePointsJson({
+      kpsA, kpsB, matches,
+      imageA: imgA ? imgA.name : null,
+      imageB: imgB ? imgB.name : null,
+    });
+  }, [kpsA, kpsB, matches, imgA, imgB]);
+  const snapshotDirty = !!(currentJsonText && snapshotMeta.actual?.text !== currentJsonText);
+
+  const saveActual = useCallback((log = false) => {
+    if (!currentJsonText) return false;
+    const slot = {
+      text: currentJsonText,
+      savedAt: Date.now(),
+      imageA: imgA ? imgA.name : null,
+      imageB: imgB ? imgB.name : null,
+    };
+    if (!writeSlot(null, 'actual', slot)) return false;
+    setSnapshotMeta(m => ({ ...m, actual: slot }));
+    if (log) console.info('Снимок сохранён (актуальный слот)');
+    return true;
+  }, [currentJsonText, imgA, imgB]);
+
+  // базовая линия: новый JSON или результат детекта → оба слота, dirty=false
+  const setBaseSnapshots = useCallback((text, imageA, imageB) => {
+    const slot = { text, savedAt: Date.now(), imageA, imageB };
+    writeSlot(null, 'initial', slot);
+    writeSlot(null, 'actual', slot);
+    setSnapshotMeta({ initial: slot, actual: slot });
+  }, []);
+
+  // тихий сейв перед переключением режима/фильтра — только если есть правки
+  const quietSave = useCallback(() => { if (snapshotDirty) saveActual(); },
+    [snapshotDirty, saveActual]);
+
+  // отмена prune-цикла и сброс стека при замене точек
+  const resetPrune = useCallback(() => {
+    pruneGenRef.current++;
+    setPruneStack([]);
+    setPruneTarget(0);
+    setPruneBusy(false);
+    setPruneProgress(null);
+  }, []);
+
+  // стейт-зеркало для prune-цикла: эффект зависит только от pruneTarget,
+  // поэтому цикл читает свежие массивы из ref, а не из замыкания
+  const stateRef = useRef({ kpsA, kpsB, matches, pruneStack });
+  useEffect(() => { stateRef.current = { kpsA, kpsB, matches, pruneStack }; });
 
   // --- метаданные методов с бэка
   useEffect(() => {
@@ -154,6 +233,15 @@ export default function App() {
     setPointsSource('det');
     setSelected(null);
     setConnectFrom(null);
+    setSoloMode(false);
+    resetPrune();
+    setBaseSnapshots(
+      serializePointsJson({
+        kpsA: det.kpsA, kpsB: det.kpsB, matches: det.matches,
+        imageA: imgA ? imgA.name : null, imageB: imgB ? imgB.name : null,
+      }),
+      imgA ? imgA.name : null, imgB ? imgB.name : null,
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [det.runId]);
 
@@ -193,10 +281,138 @@ export default function App() {
   // значение деформируемости согласовано с текущими matches
   const impReady = !!(importance && importance.values.length === matches.length);
 
-  // --- наложение: пары в триангуляции (все пары минус исключённые кликом)
+  // --- фильтр точек: границы областей Mask2Former ∪ важные для деформации.
+  // Объявлен до warpCount/эффекта наложения: warp строится по показываемым.
+  const maskBoundary = maskData && maskData.imgB === imgB ? maskData.boundary : null;
+  const canFilter = !!maskBoundary;
+  const classFilter = useClassFilter({
+    enabled: filterOn, classMap: maskData?.imgB === imgB ? maskData.classMapPng : null,
+    points: kpsB, excludedClasses, margin: classMargin,
+  });
+
+  const filterSets = useMemo(() => {
+    if (!filterOn || !maskBoundary) return null;
+    return computeHiddenSets({
+      kpsA, kpsB, matches,
+      importance: impReady ? importance : null,
+      boundary: maskBoundary, imgB,
+      impThr: filterImpThr, radius: filterRadius,
+      classKeep: classFilter.keep, geometryOn: geometryFilterOn,
+    });
+  }, [filterOn, maskBoundary, kpsA, kpsB, matches,
+      impReady, importance, imgB, filterImpThr, filterRadius, classFilter.keep, geometryFilterOn]);
+
+  // панель настроек фильтра видна, пока параметры отличаются от применённых
+  const filterDirty = !appliedFilterParams
+    || filterImpThr !== appliedFilterParams.filterImpThr
+    || filterRadius !== appliedFilterParams.filterRadius
+    || classMargin !== appliedFilterParams.classMargin
+    || geometryFilterOn !== appliedFilterParams.geometryFilterOn
+    || pruneTarget !== appliedFilterParams.pruneTarget
+    || excludedClasses.length !== appliedFilterParams.excludedClasses.length
+    || excludedClasses.some((id, i) => id !== appliedFilterParams.excludedClasses[i]);
+
+  const onApplyFilter = useCallback(() => {
+    setAppliedFilterParams({
+      filterImpThr, filterRadius, classMargin, geometryFilterOn,
+      pruneTarget, excludedClasses: [...excludedClasses],
+    });
+  }, [filterImpThr, filterRadius, classMargin, geometryFilterOn,
+      pruneTarget, excludedClasses]);
+
+  const onExpandFilter = useCallback(() => setAppliedFilterParams(null), []);
+
+  const toggleFilter = useCallback(() => {
+    if (!canFilter) return;
+    quietSave();
+    setFilterOn(v => !v);
+    // включение всегда раскрывает панель (выключение снапшот не трогает —
+    // ctxbar и так скрыт, а при следующем включении панель будет видна)
+    setAppliedFilterParams(null);
+  }, [canFilter, quietSave]);
+
+  // --- prune: цикл удаления/восстановления пар по значению ползунка.
+  // Зависит только от pruneTarget: свежие массивы читает из stateRef,
+  // поэтому промежуточные коммиты не перезапускают цикл.
+  const pruneMax = Math.max(0, matches.length + pruneStack.length - MIN_POINTS_FOR_IMPORTANCE);
+  useEffect(() => {
+    const { kpsA, kpsB, matches, pruneStack } = stateRef.current;
+    const gen = ++pruneGenRef.current;
+
+    // возврат: снять верхние записи стека до целевого размера (LIFO)
+    if (pruneTarget < pruneStack.length) {
+      const n = pruneStack.length - pruneTarget;
+      const r = restoreEntries(kpsA, kpsB, matches, pruneStack.slice(-n));
+      if (r.failed) {
+        console.warn(`Восстановление prune: ${r.failed} записей возвращены в конец ` +
+          '(внешняя правка сдвинула индексы)');
+      }
+      setKpsA(r.kpsA); setKpsB(r.kpsB); setMatches(r.matches);
+      setPruneStack(s => s.slice(0, s.length - n));
+      return;
+    }
+    if (pruneTarget === pruneStack.length) return;
+
+    // удаление: после каждой пары — полный пересчёт важности
+    const n = pruneTarget - pruneStack.length;
+    let curA = kpsA, curB = kpsB, curM = matches;
+    let stack = pruneStack;
+    setPruneBusy(true);
+    setPruneProgress({ i: 0, n });
+    (async () => {
+      try {
+        for (let i = 0; i < n; i++) {
+          if (pruneGenRef.current !== gen) return;
+          if (curM.length < MIN_POINTS_FOR_IMPORTANCE) {
+            console.warn('prune: пар осталось меньше минимума — остановились');
+            break;
+          }
+          const pairs = buildPairArrays(curM, curA, curB, imgA);
+          if (!pairs) break;
+          const { left, right, corners } = pairs;
+          const M = left.length;
+          const values = new Float64Array(M);
+          const CH = 20;
+          for (let s = 0; s < M; s += CH) {
+            if (pruneGenRef.current !== gen) return;
+            computeImportanceRange(left, right, corners, s, Math.min(M, s + CH), values);
+            await new Promise(r => setTimeout(r, 0));
+          }
+          if (pruneGenRef.current !== gen) return;
+          const idx = argminNorms(normalize(values));
+          if (idx == null) break;
+          const res = removePair(curA, curB, curM, idx);
+          if (!res) break;
+          curA = res.kpsA; curB = res.kpsB; curM = res.matches;
+          stack = [...stack, res.entry];
+          // коммит после каждого удаления — UI живой, debounce-эффект важности
+          // схлопнется после финального коммита (300 мс > шага цикла не будут
+          // гоняться — генератор impGenRef их и так отменяет)
+          setKpsA(curA); setKpsB(curB); setMatches(curM); setPruneStack(stack);
+          setPruneProgress({ i: i + 1, n });
+        }
+        // ползунок мог цеплять больше, чем разрешили пары — вернуть согласованность
+        if (pruneGenRef.current === gen && stack.length !== pruneTarget) {
+          setPruneTarget(stack.length);
+        }
+      } finally {
+        if (pruneGenRef.current === gen) {
+          setPruneBusy(false);
+          setPruneProgress(null);
+        }
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pruneTarget]);
+
+  // --- наложение: пары в триангуляции — все, кроме исключённых кликом (ex)
+  // и скрытых визуальным фильтром (классы/важность). Solo в warp не входит:
+  // это режим просмотра, из 1 пары меш не построить.
+  const warpHiddenA = filterSets ? filterSets.hiddenA : null;
+  const warpHiddenB = filterSets ? filterSets.hiddenB : null;
   const warpCount = useMemo(
-    () => warpPairCount(matches, kpsA, kpsB),
-    [matches, kpsA, kpsB],
+    () => warpPairCount(matches, kpsA, kpsB, warpHiddenA, warpHiddenB),
+    [matches, kpsA, kpsB, warpHiddenA, warpHiddenB],
   );
   const canOverlay = !!(imgA && imgB && warpCount >= 3);
 
@@ -211,7 +427,7 @@ export default function App() {
       return;
     }
     const gen = ++overlayGenRef.current;
-    const pairs = selectWarpPairs(matches, kpsA, kpsB);
+    const pairs = selectWarpPairs(matches, kpsA, kpsB, warpHiddenA, warpHiddenB);
     if (!pairs) {
       setOverlay({ warped: null, edges: [], pairs: 0, total: matches.length });
       return;
@@ -228,7 +444,8 @@ export default function App() {
       });
     }, 300);
     return () => clearTimeout(timer);
-  }, [overlayVisible, rwarpVisible, imgA, imgB, kpsA, kpsB, matches]);
+  }, [overlayVisible, rwarpVisible, imgA, imgB, kpsA, kpsB, matches,
+      warpHiddenA, warpHiddenB]);
 
   // --- отрисовка слоя наложения в левой панели
   const overlayWarped = overlay ? overlay.warped : null;
@@ -328,39 +545,48 @@ export default function App() {
 
   const maskCount = maskData ? maskData.instances.length : 0;
 
-  // --- фильтр точек: границы областей Mask2Former ∪ важные для деформации
-  const maskBoundary = maskData && maskData.imgB === imgB ? maskData.boundary : null;
-  const canFilter = !!maskBoundary;
-  const classFilter = useClassFilter({
-    enabled: filterOn, classMap: maskData?.imgB === imgB ? maskData.classMapPng : null,
-    points: kpsB, excludedClasses, margin: classMargin,
-  });
-
-  const filterSets = useMemo(() => {
-    if (!filterOn || !maskBoundary) return null;
-    return computeHiddenSets({
-      kpsA, kpsB, matches,
-      importance: impReady ? importance : null,
-      boundary: maskBoundary, imgB,
-      impThr: filterImpThr, radius: filterRadius,
-      classKeep: classFilter.keep, geometryOn: geometryFilterOn,
-    });
-  }, [filterOn, maskBoundary, kpsA, kpsB, matches,
-      impReady, importance, imgB, filterImpThr, filterRadius, classFilter.keep, geometryFilterOn]);
-
-  const toggleFilter = useCallback(() => {
-    if (!canFilter) return;
-    setFilterOn(v => !v);
-  }, [canFilter]);
-
-  // --- проверка с эталоном: нужен правое изображение и рассчитанное наложение
-  const canCheck = !!(imgB && overlay && overlay.warped);
-
-  const handleCheckFile = useCallback(async (file) => {
-    if (!file || !imgB || !overlay || !overlay.warped) {
-      console.warn('Проверка: нужны правое изображение и рассчитанное наложение');
-      return;
+  // --- solo: скрыть все точки, кроме выбранной пары (или самой точки без пары)
+  const soloHidden = useMemo(() => {
+    if (!soloMode) return null;
+    const visA = new Set(), visB = new Set();
+    if (selected) {
+      const m = matches.find(mm =>
+        (selected.side === 'a' ? mm.aIdx : mm.bIdx) === selected.idx);
+      if (m) { visA.add(m.aIdx); visB.add(m.bIdx); }
+      else if (selected.side === 'a') visA.add(selected.idx);
+      else visB.add(selected.idx);
     }
+    const hA = new Set(), hB = new Set();
+    kpsA.forEach((_, i) => { if (!visA.has(i)) hA.add(i); });
+    kpsB.forEach((_, i) => { if (!visB.has(i)) hB.add(i); });
+    return { hiddenA: hA, hiddenB: hB };
+  }, [soloMode, selected, matches, kpsA, kpsB]);
+
+  const unionHidden = (a, b) => {
+    if (!a && !b) return null;
+    if (!a) return b;
+    if (!b) return a;
+    const out = new Set(a);
+    b.forEach(i => out.add(i));
+    return out;
+  };
+  const effectiveHiddenA = unionHidden(filterSets ? filterSets.hiddenA : null,
+    soloHidden ? soloHidden.hiddenA : null);
+  const effectiveHiddenB = unionHidden(filterSets ? filterSets.hiddenB : null,
+    soloHidden ? soloHidden.hiddenB : null);
+
+  // HUD координат — только в режиме правки, в панели выбранной точки
+  const editHudA = editMode && selected && selected.side === 'a' && kpsA[selected.idx]
+    ? kpsA[selected.idx] : null;
+  const editHudB = editMode && selected && selected.side === 'b' && kpsB[selected.idx]
+    ? kpsB[selected.idx] : null;
+
+  // --- проверка с эталоном: кнопка активна всегда, эталон запоминается
+  // на сессию; расчёт запускает эффект ниже, как только есть наложение.
+
+  // выбор файла лишь запоминает эталон — расчёт запускает эффект ниже
+  const handleCheckFile = useCallback(async (file) => {
+    if (!file) return;
     let refImg;
     try {
       refImg = await loadImage(file);
@@ -369,38 +595,45 @@ export default function App() {
       setCheckError(String(e?.message || e));
       return;
     }
+    setRefImage(refImg);
+    setCheckError(null);
+    setCheckOpen(true);
+  }, []);
 
+  // авто-пересчёт метрик при любом изменении наложения (правка пар, prune, фильтр)
+  const warpedForCheck = overlay ? overlay.warped : null;
+  useEffect(() => {
+    if (!refImage || !imgB || !warpedForCheck) return;
     const gen = ++checkGenRef.current;
     setCheckBusy(true);
     setCheckError(null);
-    try {
-      const warpedUrl = overlay.warped.toDataURL('image/png');
-      const res = await fetchSimilarity(refImg.dataUrl, imgB.dataUrl, warpedUrl);
-      if (checkGenRef.current !== gen) return;
-      setCheckData({ refName: refImg.name || 'эталон', ...res });
-      setCheckOpen(true);
-      console.info(
-        `Проверка с «${refImg.name}»: SSIM начальное ${res.initial.ssim?.toFixed(3)} → ` +
-        `наложенное ${res.warped.ssim?.toFixed(3)} · общая область ` +
-        `${res.compared_size[0]}×${res.compared_size[1]}`);
-    } catch (e) {
-      if (checkGenRef.current !== gen) return;
-      console.error('Проверка с эталоном:', e);
-      setCheckError(String(e?.message || e));
-    } finally {
-      if (checkGenRef.current === gen) setCheckBusy(false);
-    }
-  }, [imgB, overlay]);
+    // debounce поверх warp-debounce — prune-цикл коммитит пачками
+    const timer = setTimeout(async () => {
+      try {
+        const warpedUrl = warpedForCheck.toDataURL('image/png');
+        const res = await fetchSimilarity(refImage.dataUrl, imgB.dataUrl, warpedUrl);
+        if (checkGenRef.current !== gen) return;
+        setCheckData({ refName: refImage.name || 'эталон', ...res });
+      } catch (e) {
+        if (checkGenRef.current !== gen) return;
+        console.error('Проверка с эталоном:', e);
+        setCheckError(String(e?.message || e));
+      } finally {
+        if (checkGenRef.current === gen) setCheckBusy(false);
+      }
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [refImage, imgB, warpedForCheck]);
 
-  // смена картинок или пересчёт наложения обесценивают результат проверки
-  const warpedForCheck = overlay ? overlay.warped : null;
+  // смена правого изображения — новый сценарий: результат проверки бессмысленен,
+  // но эталон сессионный и переживает смену снимка (метрики пересчитает авто-эффект)
   useEffect(() => {
     checkGenRef.current++;
     setCheckData(null);
     setCheckError(null);
     setCheckBusy(false);
     setCheckOpen(false);
-  }, [imgA, imgB, warpedForCheck]);
+  }, [imgB]);
 
   const canSave = !!(overlay && overlay.warped && imgA);
 
@@ -610,18 +843,51 @@ export default function App() {
     setConnectFrom(null);
   }, [imgA, imgB, kpsA, kpsB, wasDrag]);
 
-  // --- Delete/Backspace — удалить выбранную точку; Escape — отмена пары / закрыть панель
+  // --- клавиатура: Delete — удалить выбранную точку; Escape — выйти из режимов;
+  // Ctrl/Cmd+S — сохранить актуальный снимок; стрелки — правка выбранной точки
   useEffect(() => {
     const onKey = (e) => {
+      const typing = e.target && (
+        e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA'
+        || e.target.isContentEditable);
+
+      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S' || e.key === 'ы')) {
+        e.preventDefault();                        // не открывать «Сохранить страницу»
+        saveActual(true);
+        return;
+      }
       if (e.key === 'Escape') {
         setConnectFrom(null);
         setDeformMode(false);
+        setEditMode(false);
+        setSoloMode(false);
         setPairsOpen(false);
         setImpOpen(false);
         setCheckOpen(false);
         return;
       }
+
+      // стрелки: движение выбранной точки ±1px (Shift ±10px) в режиме правки
+      if (editMode && selected && !typing
+          && (e.key === 'ArrowUp' || e.key === 'ArrowDown'
+              || e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        e.preventDefault();
+        const step = e.shiftKey ? 10 : 1;
+        const dx = e.key === 'ArrowRight' ? step : e.key === 'ArrowLeft' ? -step : 0;
+        const dy = e.key === 'ArrowDown' ? step : e.key === 'ArrowUp' ? -step : 0;
+        const { side, idx } = selected;
+        const kps = side === 'a' ? kpsA : kpsB;
+        const img = side === 'a' ? imgA : imgB;
+        const kp = kps[idx];
+        if (!kp || !img) return;
+        const np = clampKp({ x: kp.x + dx, y: kp.y + dy }, img);
+        if (side === 'a') setKpsA(prev => prev.map((k, i) => (i === idx ? np : k)));
+        else setKpsB(prev => prev.map((k, i) => (i === idx ? np : k)));
+        return;
+      }
+
       if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+      if (typing) return;                          // Backspace в поле ввода не трогает точки
       if (!selected) return;
       e.preventDefault();
 
@@ -637,7 +903,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selected, kpsA, kpsB, matches]);
+  }, [selected, kpsA, kpsB, matches, editMode, imgA, imgB, saveActual]);
 
   // --- все линии матчей (тумблер в тулбаре)
   useEffect(() => {
@@ -649,6 +915,7 @@ export default function App() {
       const out = [];
       matches.forEach((m, i) => {
         if (filterSets && (filterSets.hiddenA.has(m.aIdx) || filterSets.hiddenB.has(m.bIdx))) return;
+        if (soloHidden && (soloHidden.hiddenA.has(m.aIdx) || soloHidden.hiddenB.has(m.bIdx))) return;
         const ka = kpsA[m.aIdx], kb = kpsB[m.bIdx];
         if (!ka || !kb) return;
         const p1 = toMain(screenPoint(pa, tf, ka));
@@ -664,7 +931,7 @@ export default function App() {
     update();
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
-  }, [showAllLines, tf, matches, kpsA, kpsB, toMain, pairsOpen, impOpen, checkOpen, filterSets]);
+  }, [showAllLines, tf, matches, kpsA, kpsB, toMain, pairsOpen, impOpen, checkOpen, filterSets, soloHidden]);
 
   // --- загрузка одной картинки в конкретную рамку
   const handleFile = useCallback(async (file, side) => {
@@ -685,7 +952,7 @@ export default function App() {
   }, [pointsSource]);
 
   // --- JSON: применить распарсенные точки
-  const applyParsed = useCallback((p, prefix = '') => {
+  const applyParsed = useCallback((p, prefix = '', isBaseline = false) => {
     let warn = '';
     if (imgA && p.imageA && imgA.name !== p.imageA) warn += ` · A: «${p.imageA}» ≠ «${imgA.name}»`;
     if (imgB && p.imageB && imgB.name !== p.imageB) warn += ` · B: «${p.imageB}» ≠ «${imgB.name}»`;
@@ -697,16 +964,39 @@ export default function App() {
     setPointsSource('json');
     setSelected(null);
     setConnectFrom(null);
+    setSoloMode(false);
+    resetPrune();
     lastJsonLoadAtRef.current = Date.now();
+    if (isBaseline) {
+      setBaseSnapshots(
+        serializePointsJson({
+          kpsA: p.kpsA, kpsB: p.kpsB, matches: p.matches,
+          imageA: p.imageA, imageB: p.imageB,
+        }),
+        p.imageA, p.imageB,
+      );
+    }
     console.info(`${prefix}${p.counts.pairs} пар · ${p.counts.ua}/${p.counts.ub} непарных`);
-  }, [imgA, imgB]);
+  }, [imgA, imgB, resetPrune, setBaseSnapshots]);
 
   const handleJsonFile = useCallback(async (file) => {
     try {
       const text = await file.text();
-      applyParsed(parsePointsJson(text));
+      applyParsed(parsePointsJson(text), '', true);
     } catch (e) {
       console.error('Ошибка JSON:', e);
+    }
+  }, [applyParsed]);
+
+  // восстановление из слота (не трогает слоты — иначе lost baseline/actual)
+  const restoreSnapshot = useCallback((slot) => {
+    const s = readSlot(null, slot);
+    if (!s) { console.warn(`Слот «${slot}» пуст`); return; }
+    try {
+      applyParsed(parsePointsJson(s.text),
+        `Восстановлено из слота ${slot} (${new Date(s.savedAt).toLocaleTimeString()}): `);
+    } catch (e) {
+      console.error('Ошибка восстановления снимка:', e);
     }
   }, [applyParsed]);
 
@@ -724,19 +1014,37 @@ export default function App() {
     console.info(`Сохранено: ${matches.length} пар · ${ua}/${ub} непарных`);
   }, [kpsA, kpsB, matches, imgA, imgB]);
 
-  // режимы взаимоисключимы: включили один — второй выключается
+  // режимы взаимоисключимы: включили один — остальные выключаются
   const toggleConnect = useCallback(() => {
+    quietSave();
     const on = !connectMode;
     setConnectMode(on);
     setConnectFrom(null);
-    if (on) setDeformMode(false);
-  }, [connectMode]);
+    if (on) { setDeformMode(false); setEditMode(false); }
+  }, [connectMode, quietSave]);
 
   const toggleDeform = useCallback(() => {
+    quietSave();
     const on = !deformMode;
     setDeformMode(on);
-    if (on) { setConnectMode(false); setConnectFrom(null); }
-  }, [deformMode]);
+    if (on) { setConnectMode(false); setConnectFrom(null); setEditMode(false); }
+  }, [deformMode, quietSave]);
+
+  const toggleEdit = useCallback(() => {
+    quietSave();
+    const on = !editMode;
+    setEditMode(on);
+    if (on) { setConnectMode(false); setDeformMode(false); setConnectFrom(null); }
+  }, [editMode, quietSave]);
+
+  const toggleSolo = useCallback(() => setSoloMode(v => !v), []);
+
+  // автосейв: включён — записывать актуальный снимок после каждой правки (debounce)
+  useEffect(() => {
+    if (!autoSave) return;
+    const t = setTimeout(() => { saveActual(); }, 500);
+    return () => clearTimeout(t);
+  }, [autoSave, currentJsonText, saveActual]);
 
   const canGenerate = !!(cvReady && imgA && imgB);
 
@@ -756,6 +1064,10 @@ export default function App() {
         onToggleConnect={toggleConnect}
         deformMode={deformMode}
         onToggleDeform={toggleDeform}
+        editMode={editMode}
+        onToggleEdit={toggleEdit}
+        soloMode={soloMode}
+        onToggleSolo={toggleSolo}
         onGenerate={handleGenerate}
         canGenerate={canGenerate}
         canOverlay={canOverlay}
@@ -785,11 +1097,20 @@ export default function App() {
         onToggleFilter={toggleFilter}
         canFilter={canFilter}
         filterInfo={filterSets}
+        filterDirty={filterDirty}
+        onApplyFilter={onApplyFilter}
+        onExpandFilter={onExpandFilter}
         filterImpThr={filterImpThr}
         setFilterImpThr={setFilterImpThr}
         filterRadius={filterRadius}
         setFilterRadius={setFilterRadius}
         filterReady={impReady}
+        pruneTarget={pruneTarget}
+        setPruneTarget={setPruneTarget}
+        pruneMax={pruneMax}
+        pruneBusy={pruneBusy}
+        pruneProgress={pruneProgress}
+        pruneRemoved={pruneStack.length}
         semanticClasses={maskData?.classes || []}
         excludedClasses={excludedClasses}
         setExcludedClasses={setExcludedClasses}
@@ -801,9 +1122,16 @@ export default function App() {
         classFilterError={classFilter.error}
         marginSavedCount={classFilter.savedCount}
         onCheckFile={handleCheckFile}
-        canCheck={canCheck}
         checkBusy={checkBusy}
         checkError={checkError}
+        refName={refImage?.name || null}
+        snapshotDirty={snapshotDirty}
+        snapshotInitialAt={snapshotMeta.initial?.savedAt ?? null}
+        snapshotActualAt={snapshotMeta.actual?.savedAt ?? null}
+        onSaveSnapshot={() => saveActual(true)}
+        onRestoreSnapshot={restoreSnapshot}
+        autoSave={autoSave}
+        setAutoSave={setAutoSave}
       />
 
       <div className="panels">
@@ -823,7 +1151,9 @@ export default function App() {
             dragging={dragging}
             overlayLayerRef={overlayLayerRef}
             overlayAlpha={overlayAlpha}
-            hidden={filterSets ? filterSets.hiddenA : null}
+            hidden={effectiveHiddenA}
+            editMode={editMode}
+            editHud={editHudA}
           />
           <Panel
             side="b" img={imgB} kps={kpsB} tf={tf} panelRef={panelBRef}
@@ -846,7 +1176,9 @@ export default function App() {
             rwarpMeshRef={rwarpMeshRef}
             rwarpAlpha={rwarpAlpha}
             rwarpVisible={rwarpVisible}
-            hidden={filterSets ? filterSets.hiddenB : null}
+            hidden={effectiveHiddenB}
+            editMode={editMode}
+            editHud={editHudB}
           />
           <ConnectionLine lines={allLines} line={line} />
         </div>
@@ -863,6 +1195,7 @@ export default function App() {
           hiddenB={filterSets ? filterSets.hiddenB : null}
           checkOpen={checkOpen} setCheckOpen={setCheckOpen}
           checkData={checkData} checkBusy={checkBusy} checkError={checkError}
+          refReady={!!refImage} refName={refImage?.name || null}
         />
       </div>
     </div>

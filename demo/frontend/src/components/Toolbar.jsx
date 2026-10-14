@@ -52,6 +52,24 @@ const IcDeform = () => (
   </svg>
 );
 
+// режим редактирования: карандаш
+const IcEdit = () => (
+  <svg {...SV}>
+    <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+    <path d="m15 5 4 4" />
+  </svg>
+);
+
+// solo: глаз с перечёркиванием — скрыть всё кроме выбранной пары
+const IcSolo = () => (
+  <svg {...SV}>
+    <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+    <path d="M6.61 6.61A13.5 13.5 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+    <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
+    <path d="m2 2 20 20" />
+  </svg>
+);
+
 // маски: область-«капля»
 const IcMask = () => (
   <svg {...SV}>
@@ -90,6 +108,7 @@ export function Toolbar({
   busy, showAllLines, onToggleAllLines,
   onJsonFile, onSaveJson, connectMode, onToggleConnect,
   deformMode, onToggleDeform,
+  editMode, onToggleEdit, soloMode, onToggleSolo,
   onGenerate, canGenerate,
   canOverlay, overlayVisible, onToggleOverlay,
   overlayAlpha, setOverlayAlpha,
@@ -100,12 +119,16 @@ export function Toolbar({
   maskVisible, onToggleMask, maskBusy, maskError, canMask,
   maskAlpha, setMaskAlpha, maskCount, maskMs,
   filterOn, onToggleFilter, canFilter, filterInfo,
+  filterDirty, onApplyFilter, onExpandFilter,
   filterImpThr, setFilterImpThr, filterRadius, setFilterRadius,
   filterReady,
+  pruneTarget, setPruneTarget, pruneMax, pruneBusy, pruneProgress, pruneRemoved,
   semanticClasses, excludedClasses, setExcludedClasses,
   classMargin, setClassMargin, geometryFilterOn, setGeometryFilterOn,
   classFilterBusy, classFilterError, marginSavedCount,
-  onCheckFile, canCheck, checkBusy, checkError,
+  onCheckFile, checkBusy, checkError, refName,
+  snapshotDirty, snapshotInitialAt, snapshotActualAt,
+  onSaveSnapshot, onRestoreSnapshot, autoSave, setAutoSave,
 }) {
   const list = visibleMethods(methodsMeta);
   const entries = list.length ? list : FALLBACK;
@@ -179,17 +202,19 @@ export function Toolbar({
   const filterTitle = !canFilter
     ? 'Сначала посчитайте маски Mask2Former'
     : filterOn
-      ? 'Выключить фильтры и показать все точки'
+      ? filterDirty
+        ? 'Выключить фильтры и показать все точки'
+        : 'Показать панель настроек фильтра (фильтр активен)'
       : 'Настроить запрещённые классы и марджин для точек правого снимка';
 
-  const checkTitle = !canCheck
-    ? 'Нужно правое изображение и рассчитанное наложение (кнопка «слои»)'
-    : checkBusy
-      ? 'Считаем метрики сходства с эталоном…'
-      : checkError
-        ? `Ошибка: ${checkError}`
-        : 'Проверить с эталоном: MAE, PSNR, SSIM, корреляция и сдвиги — ' +
-          'сравнить начальное изображение и наложенное с выбранным файлом-эталоном';
+  const checkTitle = checkBusy
+    ? 'Считаем метрики сходства с эталоном…'
+    : checkError
+      ? `Ошибка: ${checkError}`
+      : refName
+        ? `Эталон «${refName}» — метрики обновляются автоматически. Выбрать другой файл`
+        : 'Выбрать эталон: MAE, PSNR, SSIM, корреляция и сдвиги — метрики ' +
+          'пересчитываются автоматически при любой правке наложения';
 
   const closeMenus = () => { setMenuOpen(false); setMoreOpen(false); };
 
@@ -254,6 +279,19 @@ export function Toolbar({
         aria-label="Режим деформации"
       >
         <IcDeform />
+      </button>
+
+      <button
+        className={'ibtn' + (editMode ? ' active' : '')}
+        onClick={onToggleEdit}
+        disabled={busy}
+        title={editMode
+          ? 'Режим правки: выбранная точка мельчает (видно под ней), координаты ' +
+            'в HUD сверху; стрелки ±1px, Shift+стрелки ±10px. Esc или кнопка — выйти'
+          : 'Режим правки: выбранная точка мельчает, координаты в HUD, движение стрелками'}
+        aria-label="Режим правки"
+      >
+        <IcEdit />
       </button>
 
       <button
@@ -325,10 +363,25 @@ export function Toolbar({
         </div>
       )}
 
+      <button
+        className={'ibtn' + (soloMode ? ' active' : '')}
+        onClick={onToggleSolo}
+        title={soloMode
+          ? 'Solo: показать только выбранную пару; повторное нажатие — вернуть все точки. Esc — выйти'
+          : 'Отключить все точки, кроме выбранной пары (пары без выделения — всё скрыто)'}
+        aria-label="Только выбранная пара"
+      >
+        <IcSolo />
+      </button>
+
       {/* фильтр точек после масок */}
       <button
         className={'ibtn' + (filterOn ? ' active' : '')}
-        onClick={onToggleFilter}
+        onClick={() => {
+          // свёрнутый фильтр: клик по воронке разворачивает панель, не выключает
+          if (filterOn && !filterDirty) onExpandFilter();
+          else onToggleFilter();
+        }}
         disabled={!canFilter}
         title={filterTitle}
         aria-label="Фильтр точек"
@@ -336,7 +389,18 @@ export function Toolbar({
         <IcFilter />
       </button>
 
-      {filterOn && filterInfo && (
+      {/* свёрнутое состояние: фильтр применён, показываем только счётчик */}
+      {filterOn && filterInfo && !filterDirty && (
+        <button
+          className="filter-count filter-count-btn"
+          onClick={onExpandFilter}
+          title="Фильтр применён — показать панель настроек"
+        >
+          {filterInfo.keptPairs}/{filterInfo.totalPairs} пар
+        </button>
+      )}
+
+      {filterOn && filterInfo && filterDirty && (
         <div className="ctxbar class-filter-controls">
           <details className="class-picker" open>
             <summary>Запрещённые классы · {excludedClasses.length}</summary>
@@ -401,17 +465,44 @@ export function Toolbar({
             <span className="ctl-val">{filterRadius}px</span>
           </label>
           </>}
+          <label
+            className="alpha-ctl"
+            title={filterReady
+              ? 'Удалить пары с наименьшей деформируемостью — после каждой пары ' +
+                'важность пересчитывается заново; ползунок влево восстанавливает'
+              : 'Деформируемость ещё не посчитана — ползунок недоступен'}
+          >
+            <span className="ctl-note">удалить слабые</span>
+            <input
+              type="range" min="0" max={pruneMax} step="1"
+              value={Math.min(pruneTarget, pruneMax)}
+              disabled={!filterReady || pruneBusy}
+              onChange={(e) => setPruneTarget(Number(e.target.value))}
+            />
+            <span className="ctl-val" title="Удалённых пар">
+              {pruneBusy && pruneProgress
+                ? `…${pruneProgress.i}/${pruneProgress.n}`
+                : `${pruneTarget}`}
+            </span>
+          </label>
           <span className="filter-count" title="Пар, оставшихся после фильтра">
             {filterInfo.keptPairs}/{filterInfo.totalPairs} пар
           </span>
+          <button
+            className="apply-btn"
+            onClick={onApplyFilter}
+            title="Применить настройки и свернуть панель — фильтр останется активным"
+          >
+            Применить
+          </button>
         </div>
       )}
 
-      {/* проверка с эталоном: выберите файл — сравнит начальное и наложенное */}
+      {/* проверка с эталоном: кнопка активна всегда — эталон запоминается
+          на сессию, метрики появятся, как только будет наложение */}
       <button
         className={'ibtn' + (checkBusy ? ' busy' : '')}
         onClick={() => checkInputRef.current?.click()}
-        disabled={!canCheck || checkBusy}
         title={checkTitle}
         aria-label="Проверить с эталоном"
       >
@@ -424,7 +515,7 @@ export function Toolbar({
         hidden
         onChange={(e) => {
           const f = e.target.files?.[0];
-          if (f && canCheck && !checkBusy) onCheckFile(f);
+          if (f) onCheckFile(f);
           e.target.value = '';
         }}
       />
@@ -463,9 +554,49 @@ export function Toolbar({
               className="menu-item"
               disabled={busy}
               onClick={() => { closeMenus(); onSaveJson(); }}
-              title="Сохранить текущие точки и пары в JSON"
+              title="Сохранить текущие точки и пары в JSON-файл"
             >
               Сохранить JSON
+            </button>
+
+            <div className="menu-sep" />
+
+            <button
+              className="menu-item"
+              onClick={() => { closeMenus(); onSaveSnapshot(); }}
+              title="Записать актуальный снимок в браузере (localStorage)"
+            >
+              Сохранить снимок · Ctrl+S
+              {snapshotDirty && <span className="menu-dot" title="есть несохранённые правки">●</span>}
+            </button>
+            <button
+              className="menu-item"
+              disabled={!snapshotInitialAt}
+              onClick={() => { closeMenus(); onRestoreSnapshot('initial'); }}
+              title={snapshotInitialAt
+                ? `Вернуть состояние при загрузке (${new Date(snapshotInitialAt).toLocaleTimeString()})`
+                : 'Базового снимка ещё нет'}
+            >
+              К начальному{snapshotInitialAt
+                ? ` · ${new Date(snapshotInitialAt).toLocaleTimeString()}` : ''}
+            </button>
+            <button
+              className="menu-item"
+              disabled={!snapshotActualAt}
+              onClick={() => { closeMenus(); onRestoreSnapshot('actual'); }}
+              title={snapshotActualAt
+                ? `Вернуть последний сохранённый снимок (${new Date(snapshotActualAt).toLocaleTimeString()})`
+                : 'Актуального снимка ещё нет'}
+            >
+              К актуальному{snapshotActualAt
+                ? ` · ${new Date(snapshotActualAt).toLocaleTimeString()}` : ''}
+            </button>
+            <button
+              className={'menu-item' + (autoSave ? ' on' : '')}
+              onClick={() => { setAutoSave(v => !v); }}
+              title="Автоматически записывать актуальный снимок после каждой правки (с задержкой)"
+            >
+              Автосохранение {autoSave && <span className="menu-check">✓</span>}
             </button>
 
             <div className="menu-sep" />

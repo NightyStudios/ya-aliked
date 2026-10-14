@@ -10,6 +10,7 @@ export function Panel({
   dragging, overlayLayerRef, overlayAlpha,
   maskLayerRef, maskAlpha, maskVisible, hidden,
   rwarpLayerRef, rwarpMeshRef, rwarpAlpha, rwarpVisible,
+  editMode, editHud,
 }) {
   const [over, setOver] = useState(false);
   const inputRef = useRef(null);
@@ -60,6 +61,11 @@ export function Panel({
          onDragLeave={() => setOver(false)}
          onDrop={handleDrop}>
       {input}
+      {editHud && (
+        <div className="coord-hud" role="status">
+          x {editHud.x.toFixed(1)} · y {editHud.y.toFixed(1)}
+        </div>
+      )}
       <div className="stage"
            style={{
              transform: `translate(${tf.tx}px, ${tf.ty}px) scale(${tf.s})`,
@@ -92,6 +98,7 @@ export function Panel({
           onPointClick={onPointClick}
           onStartDrag={onStartDrag}
           dragging={dragging}
+          editMode={editMode}
         />
       </div>
       {over && <div className="drop-hint">Заменить изображение</div>}

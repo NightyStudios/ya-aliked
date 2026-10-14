@@ -44,7 +44,7 @@ def compute_metrics(ref: np.ndarray, img: np.ndarray, tile: int = DEFAULT_TILE) 
         valid = np.ones((h, w), dtype=bool)
 
     out: Dict[str, Any] = {
-        "mae": None, "psnr": None, "ssim": None, "ncc": None,
+        "rmse": None, "mae": None, "psnr": None, "ssim": None, "ncc": None,
         "dx": None, "dy": None, "tiles": 0, "tile_median": None,
         "tiles_under_1px": None,
     }
@@ -53,6 +53,7 @@ def compute_metrics(ref: np.ndarray, img: np.ndarray, tile: int = DEFAULT_TILE) 
     diff = np.abs(R - I).mean(2)
     mae = diff[valid].mean()
     mse = ((R - I) ** 2).mean(2)[valid].mean()
+    out["rmse"] = _finite(math.sqrt(mse))
     out["mae"] = _finite(mae)
     out["psnr"] = _finite(10 * np.log10(255 ** 2 / mse)) if mse > 0 else None
 
@@ -123,5 +124,5 @@ def compare_all(ref: np.ndarray, initial: np.ndarray, warped: np.ndarray,
 
 def labels() -> List[str]:
     """Порядок метрик для отображения (документация API/фронтенда)."""
-    return ["mae", "psnr", "ssim", "ncc", "dx", "dy",
+    return ["rmse", "mae", "psnr", "ssim", "ncc", "dx", "dy",
             "tiles", "tile_median", "tiles_under_1px"]

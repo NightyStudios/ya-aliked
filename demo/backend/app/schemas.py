@@ -137,6 +137,7 @@ class SimilarityRequest(BaseModel):
 
 class SimilarityMetrics(BaseModel):
     # None — метрика не определена (нечерные поля, вырожденный кусок и т.п.)
+    rmse: float | None = None                  # среднеквадратичная разница, 0–255
     mae: float | None = None                  # средняя абсолютная разница, 0–255
     psnr: float | None = None                 # дБ
     ssim: float | None = None

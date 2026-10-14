@@ -8,6 +8,7 @@ const fmt = (v) => (Math.round(v * 10) / 10).toString();
 // Метрики проверки с эталоном: cmp — как выбирать лучшую ячейку
 // (lower/higher — меньше/больше лучше, abs — по модулю, neutral — без подсветки)
 const CHECK_METRICS = [
+  { key: 'rmse', label: 'RMSE (0–255)', cmp: 'lower', fmt: v => v.toFixed(2) },
   { key: 'mae', label: 'MAE (0–255)', cmp: 'lower', fmt: v => v.toFixed(2) },
   { key: 'psnr', label: 'PSNR, дБ', cmp: 'higher', fmt: v => v.toFixed(2) },
   { key: 'ssim', label: 'SSIM', cmp: 'higher', fmt: v => v.toFixed(3) },
@@ -36,6 +37,7 @@ export function PointsPanel({
   matches, kpsA, kpsB, selected, setSelected, setHovered,
   importance, importanceBusy, hiddenA, hiddenB,
   checkOpen, setCheckOpen, checkData, checkBusy, checkError,
+  refReady, refName,
 }) {
   const [tab, setTab] = useState('pairs');
 
@@ -140,10 +142,19 @@ export function PointsPanel({
     if (checkBusy) return <div className="matchlist-empty">Считаем метрики…</div>;
     if (checkError) return <div className="matchlist-empty">Ошибка: {checkError}</div>;
     if (!checkData) {
+      if (refReady) {
+        return (
+          <div className="matchlist-empty">
+            Эталон <b>{refName || 'эталон'}</b> запомнен.
+            <br />Рассчитайте наложение — метрики появятся автоматически.
+          </div>
+        );
+      }
       return (
         <div className="matchlist-empty">
           Нажмите «Проверить» в тулбаре и выберите файл-эталон.
           Нужны правое изображение и рассчитанное наложение.
+          <br />Метрики обновятся автоматически при любой правке наложения.
         </div>
       );
     }

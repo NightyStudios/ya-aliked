@@ -84,6 +84,16 @@ body {
   font-size: 14px; font-weight: 600; pointer-events: none;
 }
 
+/* HUD координат выбранной точки — вверху панели, вне .stage (не масштабируется) */
+.coord-hud {
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
+  z-index: 200; pointer-events: none;
+  padding: 3px 10px; border-radius: 6px;
+  background: rgba(13, 17, 23, .82); border: 1px solid #2a3038;
+  color: #cfd6e4; font: 600 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .3px; white-space: nowrap;
+}
+
 .stage { position: absolute; top: 0; left: 0; will-change: transform; }
 /* линии живут внутри .panels-main — поверх картинок, но не поверх сайдбаров/тулбара */
 .lines {
@@ -242,6 +252,17 @@ body {
   border-radius: 6px; font-size: 11px; font-weight: 600; color: #8fa9dc;
   font-variant-numeric: tabular-nums; white-space: nowrap;
 }
+/* свёрнутый счётчик — кликабельная кнопка, разворачивает панель настроек */
+.filter-count-btn { cursor: pointer; }
+.filter-count-btn:hover { border-color: #3d6bc9; color: #c3d3f5; }
+/* «Применить» в ctxbar фильтра */
+.apply-btn {
+  padding: 6px 12px; border: 1px solid #3d6bc9; border-radius: 6px;
+  background: #1e2f52; color: #c3d3f5; font-size: 12px; font-weight: 600;
+  cursor: pointer; white-space: nowrap;
+}
+.apply-btn:hover { background: #2b4a8a; color: #fff; }
+.apply-btn:active { background: #3d6bc9; }
 .class-picker { position: relative; font-size: 12px; }
 .class-picker summary {
   padding: 7px 10px; border: 1px solid #3d6bc9; border-radius: 6px;
@@ -287,6 +308,7 @@ body {
 .menu-item:disabled { opacity: .35; cursor: not-allowed; }
 .menu-item.on { color: #8fa9dc; }
 .menu-check { color: #6f9bff; font-weight: 700; }
+.menu-dot { color: #e0a23c; margin-left: 6px; font-size: 10px; }
 .menu-sep { height: 1px; margin: 4px 2px; background: #232831; }
 
 /* строки списков, отсеянные фильтром «границы ∪ важные» */

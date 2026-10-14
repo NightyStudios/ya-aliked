@@ -7,6 +7,7 @@ export function KeypointOverlay({
   side, kps, tf, colorMap, pairNo, normMap, hidden,
   hovered, setHovered, selected, isActive,
   connectFrom, onPointClick, onStartDrag, dragging,
+  editMode,
 }) {
   const stop = (e) => e.stopPropagation();
 
@@ -48,14 +49,19 @@ export function KeypointOverlay({
         const isHovered  = !dragging && hovered && hovered.side === side && hovered.idx === i;
         const isSelected = selected && selected.side === side && selected.idx === i;
         const isPending  = connectFrom && connectFrom.side === side && connectFrom.idx === i;
-        const highlight  = isHovered || isSelected || isPending || isDragged(i);
+        // в режиме правки выбранная точка мельчает и тускнеет — видно подложку
+        const editSel    = editMode && isSelected;
+        const highlight  = !editSel && (isHovered || isSelected || isPending || isDragged(i));
 
-        const r = (highlight ? POINT_RADIUS_HOVER : POINT_RADIUS) / tf.s;
+        const r = editSel ? 2 / tf.s
+          : (highlight ? POINT_RADIUS_HOVER : POINT_RADIUS) / tf.s;
         const xs = (POINT_RADIUS + 3) / tf.s;    // половина стороны ×
         const no = pairNo ? pairNo.get(i) : undefined;
 
         return (
-          <g key={i} opacity={excluded ? 0.45 : (active ? 1 : DIM_OPACITY)}>
+          <g key={i}
+             opacity={editSel ? 0.35
+               : (excluded ? 0.45 : (active ? 1 : DIM_OPACITY))}>
             {highlight && (
               <circle cx={kp.x} cy={kp.y} r={HALO_RADIUS / tf.s}
                       fill="none"

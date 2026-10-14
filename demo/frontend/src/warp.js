@@ -6,13 +6,16 @@ import { fitAffine } from './importance';
 // (точка с флагом ex), для каждого треугольника — аффин B→A, рендер через
 // clip + setTransform.
 
-// Пары для триангуляции: все, кроме исключённых (ex на любой из точек)
-// и с неконечными координатами. null — если пар меньше 3.
-export function selectWarpPairs(matches, kpsA, kpsB) {
+// Пары для триангуляции: все, кроме исключённых (ex на любой из точек),
+// скрытых визуальным фильтром (hiddenA/hiddenB) и с неконечными координатами.
+// null — если пар меньше 3. hiddenA/hiddenB опциональны (Set индексов).
+export function selectWarpPairs(matches, kpsA, kpsB, hiddenA, hiddenB) {
   const left = [], right = [];
   for (const m of matches) {
     const a = kpsA[m.aIdx], b = kpsB[m.bIdx];
     if (!a || !b || a.ex || b.ex) continue;
+    if (hiddenA && hiddenA.has(m.aIdx)) continue;
+    if (hiddenB && hiddenB.has(m.bIdx)) continue;
     if (!Number.isFinite(a.x) || !Number.isFinite(a.y) ||
         !Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
     left.push(a);
@@ -22,11 +25,13 @@ export function selectWarpPairs(matches, kpsA, kpsB) {
 }
 
 // Сколько пар войдёт в триангуляцию (для кнопок/подсказок).
-export function warpPairCount(matches, kpsA, kpsB) {
+export function warpPairCount(matches, kpsA, kpsB, hiddenA, hiddenB) {
   let k = 0;
   for (const m of matches) {
     const a = kpsA[m.aIdx], b = kpsB[m.bIdx];
     if (!a || !b || a.ex || b.ex) continue;
+    if (hiddenA && hiddenA.has(m.aIdx)) continue;
+    if (hiddenB && hiddenB.has(m.bIdx)) continue;
     if (!Number.isFinite(a.x) || !Number.isFinite(a.y) ||
         !Number.isFinite(b.x) || !Number.isFinite(b.y)) continue;
     k++;
