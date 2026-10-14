@@ -97,4 +97,9 @@ export const DETECTORS = {
     id: 'orb_fast', label: 'fast',
     detect: (img, p) => detectRemote('orb_fast', img, p),
   },
+  // float32 128-d, norm 'l2' — матчится JS-матчером (matchDescriptorsJs)
+  sift_cv: {
+    id: 'sift_cv', label: 'cv2.SIFT',
+    detect: (img, p) => detectRemote('sift_cv', img, p),
+  },
 };

@@ -15,6 +15,11 @@ def bf_match(desc_a: np.ndarray, desc_b: np.ndarray, norm: str,
     RANSAC-фильтр — пост-фильтр /api/pipeline (флаг ransac), не здесь."""
     cv_norm = _NORM[norm]
 
+    # плоская/пустая картинка → 0 дескрипторов; crossCheck-match на пустом
+    # наборе кидает cv2.error
+    if len(desc_a) == 0 or len(desc_b) == 0:
+        return []
+
     if ratio is not None:
         bf = cv2.BFMatcher(cv_norm, crossCheck=False)
         knn = bf.knnMatch(desc_a, desc_b, k=2)
