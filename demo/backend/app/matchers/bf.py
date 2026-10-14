@@ -8,9 +8,11 @@ _NORM = {"hamming": cv2.NORM_HAMMING, "l2": cv2.NORM_L2}
 
 
 def bf_match(desc_a: np.ndarray, desc_b: np.ndarray, norm: str,
-             cross_check: bool = True, ratio: float | None = None):
+             cross_check: bool = True, ratio: float | None = None,
+             **_):
     """BF matcher. If `ratio` is set — Lowe's ratio test (knnMatch k=2),
-    else — plain match with optional crossCheck."""
+    else — plain match with optional crossCheck.
+    RANSAC-фильтр — пост-фильтр /api/pipeline (флаг ransac), не здесь."""
     cv_norm = _NORM[norm]
 
     if ratio is not None:

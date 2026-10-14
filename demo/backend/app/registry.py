@@ -9,7 +9,12 @@ import numpy as np
 DetectorFn = Callable[..., Tuple[np.ndarray, np.ndarray, str]]
 
 # Matcher signature:
-#   fn(desc_a, desc_b, norm, **matcher_params) -> list[(a_idx, b_idx, dist)]
+#   fn(desc_a, desc_b, norm, *, pts_a=None, pts_b=None,
+#      image_size_a=None, image_size_b=None, **matcher_params)
+#     -> list[(a_idx, b_idx, dist)]
+# pts_* : (N,2) float32 координаты ключевых точек (нужны RANSAC/LightGlue);
+# image_size_* : (width, height) — для LightGlue. Матчеры без этих
+# параметров просто игнорируют их (**_).
 MatcherFn = Callable[..., list]
 
 

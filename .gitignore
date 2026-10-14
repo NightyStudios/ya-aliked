@@ -1,4 +1,5 @@
 .venv/
+.hf-cache/
 __pycache__
 demo/frontend/node_modules/
 data/

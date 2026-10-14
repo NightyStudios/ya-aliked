@@ -6,7 +6,7 @@ export function ConnectionLine({ lines = [], line }) {
   return (
     <svg className="lines">
       {lines.map((l, i) => (
-        <g key={i} opacity="0.55">
+        <g key={i} opacity={l.dim ? 0.2 : 0.55}>
           <line x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2}
                 stroke={l.color || COLOR_LINE} strokeWidth="1.5" />
         </g>

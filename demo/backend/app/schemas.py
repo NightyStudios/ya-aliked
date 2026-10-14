@@ -69,6 +69,9 @@ class PipelineRequest(BaseModel):
     image_b: ImagePayload
     params: Dict[str, Any] = Field(default_factory=dict)
     matcher_params: Dict[str, Any] = Field(default_factory=dict)
+    # RANSAC-фильтр матчей по гомографии (пост-фильтр, работает с любым матчером)
+    ransac: bool = False
+    ransac_thresh: float = Field(default=3.0, gt=0)
 
 
 class PipelineResponse(BaseModel):
@@ -78,6 +81,83 @@ class PipelineResponse(BaseModel):
     elapsed_ms: float
     method: str
     matcher: str
+
+
+class SegmentRequest(BaseModel):
+    image: ImagePayload
+    # Совместимость со старым API; семантическая сегментация не использует порог.
+    threshold: float | None = Field(default=None, gt=0.0, le=1.0)
+
+
+class SegmentInstance(BaseModel):
+    id: int                          # id связной семантической области
+    label_id: int
+    label: str
+    score: float | None = None
+    area: int                      # площадь в пикселях оверлея
+    bbox: List[int]                  # [x0, y0, x1, y1] в координатах оверлея
+
+
+class SegmentResponse(BaseModel):
+    overlay_png_b64: str           # RGBA-PNG с масками (прозрачность заложена в канал A)
+    boundary_png_b64: str          # серый PNG карты границ областей (255 = граница)
+    class_map_png_b64: str         # ID класса в каждом пикселе исходного изображения
+    classes: List["SegmentClass"]
+    instances: List[SegmentInstance]
+    width: int                     # размер оверлея — фронт растянет на исходный кадр
+    height: int
+    model: str
+    mode: Literal["semantic"] = "semantic"
+    threshold: float | None = None
+    elapsed_ms: float
+
+
+class SegmentClass(BaseModel):
+    id: int
+    label: str
+    color: str
+    area: int
+
+
+class KeypointFilterRequest(BaseModel):
+    class_map_png_b64: str
+    points: List[Tuple[float, float]]
+    excluded_classes: List[int] = Field(default_factory=list)
+    margin: float = Field(default=0, ge=0, allow_inf_nan=False)
+
+
+class KeypointFilterResponse(BaseModel):
+    keep: List[bool]
+    saved_by_margin: List[bool]
+
+
+class SimilarityRequest(BaseModel):
+    image_ref: ImagePayload           # эталон
+    image_initial: ImagePayload       # начальное (правое) изображение
+    image_warped: ImagePayload        # наложенное (деформированное правое)
+    tile: int = Field(default=128, ge=8, le=512)   # размер куска для локальных сдвигов
+
+
+class SimilarityMetrics(BaseModel):
+    # None — метрика не определена (нечерные поля, вырожденный кусок и т.п.)
+    rmse: float | None = None                  # среднеквадратичная разница, 0–255
+    mae: float | None = None                  # средняя абсолютная разница, 0–255
+    psnr: float | None = None                 # дБ
+    ssim: float | None = None
+    ncc: float | None = None                  # корреляция яркостей
+    dx: float | None = None                   # общий сдвиг, px
+    dy: float | None = None
+    tiles: int = 0                            # оцененных кусков tile×tile
+    tile_median: float | None = None          # медиана |сдвига| кусков, px
+    tiles_under_1px: float | None = None      # доля кусков со сдвигом < 1 px (0..1)
+
+
+class SimilarityResponse(BaseModel):
+    ref_size: Tuple[int, int]                 # (w, h) эталона до обрезки
+    compared_size: Tuple[int, int]            # (w, h) общей области сравнения
+    initial: SimilarityMetrics
+    warped: SimilarityMetrics
+    elapsed_ms: float
 
 
 class DetectorMeta(BaseModel):

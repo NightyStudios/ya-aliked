@@ -1,4 +1,6 @@
+import threading
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -6,14 +8,29 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import detectors  # noqa: F401
 from . import matchers   # noqa: F401
 from . import registry
-from .image_io import decode_image_b64
+from . import segment
+from .keypoint_filter import decode_class_map, filter_by_mask
+from . import similarity
+from .ransac import ransac_filter_matches
+from .image_io import decode_image_b64, decode_image_rgb_b64
 from .schemas import (
     DetectRequest, DetectResponse, Detection,
     Match, MethodsResponse, DetectorMeta,
     PipelineRequest, PipelineResponse,
+    SegmentRequest, SegmentResponse, SegmentInstance,
+    KeypointFilterRequest, KeypointFilterResponse,
+    SimilarityRequest, SimilarityResponse,
 )
 
-app = FastAPI(title="ALIKE Visualizer API", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    # подгрузить Mask2Former в фоне, чтобы первый запрос не ждал скачивание весов
+    threading.Thread(target=segment.warmup, daemon=True).start()
+    yield
+
+
+app = FastAPI(title="ALIKE Visualizer API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -83,7 +100,20 @@ def pipeline(req: PipelineRequest):
     if norm_a != norm_b:
         raise HTTPException(400, "Descriptor norms mismatch between A and B")
 
-    raw = match_fn(desc_a, desc_b, norm_a, **req.matcher_params)
+    try:
+        raw = match_fn(
+            desc_a, desc_b, norm_a,
+            pts_a=pts_a, pts_b=pts_b,
+            image_size_a=(img_a.shape[1], img_a.shape[0]),
+            image_size_b=(img_b.shape[1], img_b.shape[0]),
+            **req.matcher_params,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if req.ransac:
+        raw = ransac_filter_matches(raw, pts_a, pts_b, thresh=req.ransac_thresh)
+
     dt_ms = (time.perf_counter() - t0) * 1000.0
 
     return PipelineResponse(
@@ -94,6 +124,60 @@ def pipeline(req: PipelineRequest):
         method=req.method,
         matcher=req.matcher,
     )
+
+
+@app.post("/api/segment", response_model=SegmentResponse)
+def segment_image_endpoint(req: SegmentRequest):
+    try:
+        img = decode_image_b64(req.image.image_b64)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Bad image: {e}")
+
+    try:
+        out = segment.segment_image(img)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Segmentation failed: {e}")
+
+    return SegmentResponse(
+        overlay_png_b64=out["overlay_png_b64"],
+        boundary_png_b64=out["boundary_png_b64"],
+        class_map_png_b64=out["class_map_png_b64"],
+        classes=out["classes"],
+        instances=[SegmentInstance(**i) for i in out["instances"]],
+        width=out["width"],
+        height=out["height"],
+        model=out["model"],
+        mode=out["mode"],
+        threshold=out["threshold"],
+        elapsed_ms=out["elapsed_ms"],
+    )
+
+
+@app.post("/api/filter-keypoints", response_model=KeypointFilterResponse)
+def filter_keypoints(req: KeypointFilterRequest):
+    try:
+        return filter_by_mask(decode_class_map(req.class_map_png_b64), req.points,
+                              req.excluded_classes, req.margin)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/similarity", response_model=SimilarityResponse)
+def similarity_endpoint(req: SimilarityRequest):
+    """Сравнивает эталон с начальным и с наложенным изображением."""
+    try:
+        ref = decode_image_rgb_b64(req.image_ref.image_b64)
+        initial = decode_image_rgb_b64(req.image_initial.image_b64)
+        warped = decode_image_rgb_b64(req.image_warped.image_b64)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Bad image: {e}")
+
+    try:
+        out = similarity.compare_all(ref, initial, warped, tile=req.tile)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Similarity failed: {e}")
+
+    return SimilarityResponse(**out)
 
 '''
 @app.post("/api/neighbors", response_model=NeighborsResponse)

@@ -14,7 +14,7 @@ from typing import List, Tuple
 import cv2
 import numpy as np
 
-from ORB.manual_orb import (
+from .manual_orb import (
     fast_detect_cv, fast_detect_manual,
     harris_response_manual,
     intensity_centroid_orientation,
