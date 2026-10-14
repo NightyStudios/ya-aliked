@@ -69,6 +69,9 @@ class PipelineRequest(BaseModel):
     image_b: ImagePayload
     params: Dict[str, Any] = Field(default_factory=dict)
     matcher_params: Dict[str, Any] = Field(default_factory=dict)
+    # RANSAC-фильтр матчей по гомографии (пост-фильтр, работает с любым матчером)
+    ransac: bool = False
+    ransac_thresh: float = Field(default=3.0, gt=0)
 
 
 class PipelineResponse(BaseModel):

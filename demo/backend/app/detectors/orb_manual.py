@@ -3,9 +3,9 @@ import numpy as np
 
 from ..registry import register_detector
 
-from ORB.manual_orb import manual_orb
-from ORB.manual_orb_fast import manual_orb_fast
-from ORB.manual_orb_pyramid import manual_orb_pyramid
+from .manual_orb.manual_orb import manual_orb
+from .manual_orb.manual_orb_fast import manual_orb_fast
+from .manual_orb.manual_orb_pyramid import manual_orb_pyramid
 
 
 def _run_manual(image_bgr: np.ndarray, **params):

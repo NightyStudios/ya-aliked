@@ -8,3 +8,4 @@ transformers==4.57.6
 pillow
 scipy
 scikit-image
+kornia==0.7.2

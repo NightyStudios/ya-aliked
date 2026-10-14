@@ -15,12 +15,12 @@ from typing import List, Tuple
 import cv2
 import numpy as np
 
-from ORB.manual_orb import (
+from .manual_orb import (
     fast_detect_cv, fast_detect_manual,
     intensity_centroid_orientation,
     sample_pairs_gaussian_gii,
 )
-from ORB.manual_orb_fast import (
+from .manual_orb_fast import (
     _nms_fast, _harris_scores_fast,
     _precompute_rotations, _angle_to_bucket,
     _brief_descriptor_vec,

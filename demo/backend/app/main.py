@@ -11,6 +11,7 @@ from . import registry
 from . import segment
 from .keypoint_filter import decode_class_map, filter_by_mask
 from . import similarity
+from .ransac import ransac_filter_matches
 from .image_io import decode_image_b64, decode_image_rgb_b64
 from .schemas import (
     DetectRequest, DetectResponse, Detection,
@@ -99,7 +100,20 @@ def pipeline(req: PipelineRequest):
     if norm_a != norm_b:
         raise HTTPException(400, "Descriptor norms mismatch between A and B")
 
-    raw = match_fn(desc_a, desc_b, norm_a, **req.matcher_params)
+    try:
+        raw = match_fn(
+            desc_a, desc_b, norm_a,
+            pts_a=pts_a, pts_b=pts_b,
+            image_size_a=(img_a.shape[1], img_a.shape[0]),
+            image_size_b=(img_b.shape[1], img_b.shape[0]),
+            **req.matcher_params,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if req.ransac:
+        raw = ransac_filter_matches(raw, pts_a, pts_b, thresh=req.ransac_thresh)
+
     dt_ms = (time.perf_counter() - t0) * 1000.0
 
     return PipelineResponse(
