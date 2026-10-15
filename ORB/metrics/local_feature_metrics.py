@@ -78,6 +78,26 @@ def visible(points, shape):
             & (points[:, 1] <= h - 1))
 
 
+def estimate_homography(points_a, points_b, threshold=3.0):
+    """RANSAC homography A -> B from matched points; None if <4 matches or no fit."""
+    if len(points_a) < 4:
+        return None
+    predicted, _ = cv2.findHomography(points_a, points_b, cv2.RANSAC, threshold)
+    return predicted
+
+
+def corner_errors(shape, reference, predicted):
+    """Pixel distance between the four corners of an image of `shape` projected
+    by two homographies. inf when `predicted` is missing or non-finite."""
+    errors = np.full(4, np.inf)
+    if predicted is not None:
+        h, w = shape[:2]
+        corners = np.array([[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]])
+        values = np.linalg.norm(project(corners, reference) - project(corners, predicted), axis=1)
+        errors = np.where(np.isfinite(values), values, np.inf)
+    return errors
+
+
 def pair_metrics(a, b, matches, homography, shape, thresholds, target_shape):
     """Fractions at each pixel threshold; MS uses symmetric co-visible counts."""
     pa, pb = a[matches[:, 0]], b[matches[:, 1]]
@@ -91,18 +111,10 @@ def pair_metrics(a, b, matches, homography, shape, thresholds, target_shape):
     n_a, n_b = int(visible_a.sum()), int(visible_b.sum())
     ms = [float(2 * np.sum((errors <= t) & covisible_matches) / (n_a + n_b))
           if n_a + n_b else 0.0 for t in thresholds]
-    predicted = None
-    if len(matches) >= 4:
-        predicted, _ = cv2.findHomography(pa, pb, cv2.RANSAC, 3.0)
-    corner_errors = np.full(4, np.inf)
-    if predicted is not None:
-        h, w = shape[:2]
-        corners = np.array([[0, 0], [w - 1, 0], [0, h - 1], [w - 1, h - 1]])
-        values = np.linalg.norm(project(corners, homography) - project(corners, predicted), axis=1)
-        corner_errors = np.where(np.isfinite(values), values, np.inf)
-    return {'mma': mma, 'mha': [float(np.mean(corner_errors <= t)) for t in thresholds],
+    errors_c = corner_errors(shape, homography, estimate_homography(pa, pb))
+    return {'mma': mma, 'mha': [float(np.mean(errors_c <= t)) for t in thresholds],
             'ms': ms, 'covisible_keypoints_a': n_a, 'covisible_keypoints_b': n_b,
-            'corner_errors_px': [float(e) if np.isfinite(e) else None for e in corner_errors],
+            'corner_errors_px': [float(e) if np.isfinite(e) else None for e in errors_c],
             'matches': len(matches)}
 
 

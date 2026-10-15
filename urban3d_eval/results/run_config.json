@@ -1,0 +1,26 @@
+{
+  "roots": [
+    "urban3d_part_02",
+    "urban3d_part_03"
+  ],
+  "tiles": 53,
+  "methods": [
+    "orb_cv",
+    "orb_manual",
+    "orb_fast",
+    "orb_pyramid",
+    "sift_cv",
+    "xfeat",
+    "alike_n",
+    "alike_l"
+  ],
+  "max_keypoints": 2000,
+  "thresholds_px": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "opencv": "5.0.0"
+}
